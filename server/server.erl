@@ -60,12 +60,12 @@ remove_zip(Zip) ->
 % and the pid of the handle_client process is <0.123.0>,
 % the zip file would be "toBeShared01230.tar.gz".
 create_zip(Pid, FilePath) ->
-  case file:read_file_info("shared/" ++ FilePath) of
+  case file:read_file_info("../shared/" ++ FilePath) of
     {ok, _} ->
       ParsedPid = parse_pid(Pid),
       Zip = "toBeShared" ++ ParsedPid ++ ".tar.gz",
       io:fwrite("Zip: ~p~n", [Zip]),
-      case erl_tar:create(Zip, ["shared/" ++ FilePath]) of
+      case erl_tar:create(Zip, ["../shared/" ++ FilePath]) of
         ok ->
           Zip;
         {error, Reason2} ->
