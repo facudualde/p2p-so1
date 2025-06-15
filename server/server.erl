@@ -1,8 +1,11 @@
 -module(server).
 
--export([start/0, loop/1, handle_client/1]).
+-export([start/0, loop/1, handle_client/1, send_chunks/2]).
+
+-include_lib("kernel/include/file.hrl").
 
 -define(PORT, 1234).
+-define(BLOCK_SIZE, 4096).
 
 start() ->
   {ok, ServerSocket} =
@@ -29,23 +32,53 @@ no_injections(String) ->
   UnsafeChars = ";|&><$`'\"()\\!#~",
   not lists:any(fun(Char) -> lists:member(Char, UnsafeChars) end, String).
 
-% Useful for small and medium files, but it could be a problem for big files.
-% In that case, we should send blocks of bytes.
-% What happens if we failed sending the zip? Do we try it
-% again?
-send_files(ClientSocket, Zip) ->
-  case file:read_file(Zip) of
+% Send blocks of data of 4096 bytes.
+send_chunks(ClientSocket, FD) ->
+  case file:read(FD, ?BLOCK_SIZE) of
+    eof ->
+      ok;
     {ok, Bin} ->
       case gen_tcp:send(ClientSocket, Bin) of
         ok ->
-          io:fwrite("Zip successfully sent~n"),
-          ok;
+          send_chunks(ClientSocket, FD);
         {error, Reason2} ->
           error({send_failed, Reason2})
       end;
     {error, Reason} ->
       error({read_failed, Reason})
   end.
+
+% What happens if we failed sending the zip? Do we try it
+% again?
+send_files(ClientSocket, Zip) ->
+  case file:read_file_info(Zip) of
+    {ok, FileInfo} ->
+      Size = FileInfo#file_info.size,
+      gen_tcp:send(ClientSocket, <<Size:32/big-unsigned-integer>>),
+      case file:open(Zip, [read, binary]) of
+        {ok, FD} ->
+          send_chunks(ClientSocket, FD),
+          file:close(FD),
+          ok;
+        {error, Reason2} ->
+          error({open_failed, Reason2})
+      end;
+    {error, Reason} ->
+      error({stat_failed, Reason})
+  end.
+
+  % case file:read_file(Zip) of
+  %   {ok, Bin} ->
+  %     case gen_tcp:send(ClientSocket, Bin) of
+  %       ok ->
+  %         io:fwrite("Zip successfully sent~n"),
+  %         ok;
+  %       {error, Reason2} ->
+  %         error({send_failed, Reason2})
+  %     end;
+  %   {error, Reason} ->
+  %     error({read_failed, Reason})
+  % end.
 
 remove_zip(Zip) ->
   case file:delete(Zip) of
