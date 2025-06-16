@@ -1,3 +1,4 @@
 **/*.beam
 shared/
 downloads/
+client/client
