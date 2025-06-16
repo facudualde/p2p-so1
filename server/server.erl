@@ -54,7 +54,7 @@ send_files(ClientSocket, Zip) ->
   case file:read_file_info(Zip) of
     {ok, FileInfo} ->
       Size = FileInfo#file_info.size,
-      gen_tcp:send(ClientSocket, <<Size:32/big-unsigned-integer>>),
+      gen_tcp:send(ClientSocket, <<Size:64/little-unsigned-integer>>),
       case file:open(Zip, [read, binary]) of
         {ok, FD} ->
           send_chunks(ClientSocket, FD),
@@ -98,7 +98,7 @@ create_zip(Pid, FilePath) ->
       ParsedPid = parse_pid(Pid),
       Zip = "toBeShared" ++ ParsedPid ++ ".tar.gz",
       io:fwrite("Zip: ~p~n", [Zip]),
-      case erl_tar:create(Zip, ["../shared/" ++ FilePath]) of
+      case erl_tar:create(Zip, [{FilePath, "../shared/" ++ FilePath}]) of
         ok ->
           Zip;
         {error, Reason2} ->
