@@ -67,19 +67,6 @@ send_files(ClientSocket, Zip) ->
       error({stat_failed, Reason})
   end.
 
-  % case file:read_file(Zip) of
-  %   {ok, Bin} ->
-  %     case gen_tcp:send(ClientSocket, Bin) of
-  %       ok ->
-  %         io:fwrite("Zip successfully sent~n"),
-  %         ok;
-  %       {error, Reason2} ->
-  %         error({send_failed, Reason2})
-  %     end;
-  %   {error, Reason} ->
-  %     error({read_failed, Reason})
-  % end.
-
 remove_zip(Zip) ->
   case file:delete(Zip) of
     ok ->
