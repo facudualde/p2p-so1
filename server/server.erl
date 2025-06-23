@@ -1,11 +1,15 @@
 -module(server).
 
--export([start/0, loop/1, handle_client/1, send_chunks/2]).
+-export([start/0, loop/1, handle_client/1, big_file/3]).
 
 -include_lib("kernel/include/file.hrl").
 
 -define(PORT, 1234).
--define(BLOCK_SIZE, 4096).
+-define(CHUNK_SIZE, 1048576). % 1MB
+-define(CHUNK, 111).
+-define(FOUR_MB, 4 * 1024 * 1024).
+-define(OK, 101).
+-define(NOTFOUND, 112).
 
 start() ->
   {ok, ServerSocket} =
@@ -15,17 +19,10 @@ start() ->
 loop(ServerSocket) ->
   case gen_tcp:accept(ServerSocket) of
     {ok, ClientSocket} ->
+      io:format("Client connected!~n"),
       spawn(?MODULE, handle_client, [ClientSocket])
   end,
   loop(ServerSocket).
-
-% Convert pid to string. For example,
-% <0.123.0> would be "01230".
-parse_pid(Pid) ->
-  Tokens =
-    string:tokens(
-      erlang:pid_to_list(Pid), "<>."),
-  lists:concat(Tokens).
 
 % Avoid command injections.
 no_injections(String) ->
@@ -33,14 +30,20 @@ no_injections(String) ->
   not lists:any(fun(Char) -> lists:member(Char, UnsafeChars) end, String).
 
 % Send blocks of data of 4096 bytes.
-send_chunks(ClientSocket, FD) ->
-  case file:read(FD, ?BLOCK_SIZE) of
+big_file(ClientSocket, FD, ChunkIndex) ->
+  case file:read(FD, ?CHUNK_SIZE) of
     eof ->
       ok;
-    {ok, Bin} ->
-      case gen_tcp:send(ClientSocket, Bin) of
+    {ok, FileContent} ->
+      ContentSize = byte_size(FileContent),
+      Payload =
+        <<?CHUNK:32/integer-unsigned-big,
+          ChunkIndex:2/integer-unsigned-big,
+          ContentSize:32/integer-unsigned-big,
+          FileContent:32/integer-unsigned-big>>,
+      case gen_tcp:send(ClientSocket, Payload) of
         ok ->
-          send_chunks(ClientSocket, FD);
+          big_file(ClientSocket, FD, ChunkIndex + 1);
         {error, Reason2} ->
           error({send_failed, Reason2})
       end;
@@ -48,76 +51,82 @@ send_chunks(ClientSocket, FD) ->
       error({read_failed, Reason})
   end.
 
+small_file(ClientSocket, FD, FileSize) ->
+  case file:read(FD, FileSize) of
+    eof ->
+      ok;
+    {ok, FileContent} ->
+      Payload =
+        <<?OK:8/integer-unsigned-big, FileSize:32/integer-unsigned-big, FileContent/binary>>,
+      gen_tcp:send(ClientSocket, Payload);
+    {error, Reason} ->
+      gen_tcp:send(ClientSocket, <<?NOTFOUND:8/integer-unsigned-big>>),
+      error({read_failed, Reason})
+  end.
+
 % What happens if we failed sending the zip? Do we try it
 % again?
-send_files(ClientSocket, Zip) ->
-  case file:read_file_info(Zip) of
+send_file(ClientSocket, {FilePath, FileSize}) ->
+  io:format("File size: ~p~n", [FileSize]),
+  case file:open(FilePath, [read, binary]) of
+    {ok, FD} ->
+      if FileSize =< ?FOUR_MB ->
+           small_file(ClientSocket, FD, FileSize);
+         true ->
+           Payload =
+             <<?OK:8/integer-unsigned-big,
+               FileSize:32/integer-unsigned-big,
+               ?CHUNK_SIZE:32/integer-unsigned-big>>,
+           gen_tcp:send(ClientSocket, Payload),
+           big_file(ClientSocket, FD, 0),
+           ok
+      end,
+      file:close(FD);
+    {error, Reason} ->
+      error({open_failed, Reason})
+  end.
+
+send_error_response(ClientSocket, StatusCode) ->
+  gen_tcp:send(ClientSocket, <<StatusCode:32/big-unsigned-integer>>).
+
+find_file(FileName, ClientSocket) ->
+  case file:read_file_info("../shared/" ++ FileName) of
     {ok, FileInfo} ->
-      Size = FileInfo#file_info.size,
-      gen_tcp:send(ClientSocket, <<Size:64/little-unsigned-integer>>),
-      case file:open(Zip, [read, binary]) of
-        {ok, FD} ->
-          send_chunks(ClientSocket, FD),
-          file:close(FD),
-          ok;
-        {error, Reason2} ->
-          error({open_failed, Reason2})
-      end;
+      {"../shared/" ++ FileName, FileInfo#file_info.size};
     {error, Reason} ->
-      error({stat_failed, Reason})
-  end.
-
-remove_zip(Zip) ->
-  case file:delete(Zip) of
-    ok ->
-      ok;
-    {error, Reason} ->
-      error({delete_tar_failed, Reason})
-  end.
-
-% Create zip file and return the name.
-% For example, if a process asks for file "test.txt",
-% and the pid of the handle_client process is <0.123.0>,
-% the zip file would be "toBeShared01230.tar.gz".
-create_zip(Pid, FilePath) ->
-  case file:read_file_info("../shared/" ++ FilePath) of
-    {ok, _} ->
-      ParsedPid = parse_pid(Pid),
-      Zip = "toBeShared" ++ ParsedPid ++ ".tar.gz",
-      io:fwrite("Zip: ~p~n", [Zip]),
-      case erl_tar:create(Zip, [{FilePath, "../shared/" ++ FilePath}]) of
-        ok ->
-          Zip;
-        {error, Reason2} ->
-          error({create_tar_failed, Reason2})
-      end;
-    {error, Reason} ->
+      gen_tcp:send(ClientSocket, <<?NOTFOUND:8/integer-unsigned-big>>),
       error({file_not_found, Reason})
   end.
 
 handle_client(ClientSocket) ->
   case gen_tcp:recv(ClientSocket, 0) of
-    {ok, FilePathBin} ->
-      FilePath = lists:delete($\n, binary_to_list(FilePathBin)),
-      io:format("File requested: ~p~n", [FilePath]),
-      case no_injections(FilePath) of
-        false ->
-          io:fwrite("Illegal character found!~n");
-        true ->
-          try
-            Zip = create_zip(self(), FilePath),
-            send_files(ClientSocket, Zip),
-            remove_zip(Zip)
-          catch
-            error:Reason ->
-              io:format("Error: ~p~n", [Reason]),
-              {error, Reason}
-          end
-      end,
-      handle_client(ClientSocket);
+    {ok, RawMsg} ->
+      Msg = lists:delete($\n, binary_to_list(RawMsg)),
+      Tokens = string:tokens(Msg, " "),
+      case Tokens of
+        ["DOWNLOAD_REQUEST", FileName] ->
+          io:format("File requested: ~p~n", [FileName]),
+          case no_injections(FileName) of
+            false ->
+              io:format("Illegal character found~n"),
+              send_error_response(ClientSocket, 400),
+              handle_client(ClientSocket);
+            true ->
+              try
+                FileInfo = find_file(FileName, ClientSocket),
+                send_file(ClientSocket, FileInfo)
+              catch
+                error:Reason ->
+                  io:format("Error: ~p~n", [Reason]),
+                  handle_client(ClientSocket)
+              end
+          end;
+        _ ->
+          io:format("Bad request~n"),
+          send_error_response(ClientSocket, 400),
+          handle_client(ClientSocket)
+      end;
     {error, closed} ->
-      io:fwrite("Client disconnected"),
+      io:format("Client disconnected~n"),
       ok
   end.
-
-% Ask about global:set_lock(lock) and global:del_lock(lock)
