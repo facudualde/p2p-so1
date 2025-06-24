@@ -37,10 +37,10 @@ big_file(ClientSocket, FD, ChunkIndex) ->
     {ok, FileContent} ->
       ContentSize = byte_size(FileContent),
       Payload =
-        <<?CHUNK:32/integer-unsigned-big,
-          ChunkIndex:2/integer-unsigned-big,
+        <<?CHUNK:8/integer-unsigned-big,
+          ChunkIndex:16/integer-unsigned-big,
           ContentSize:32/integer-unsigned-big,
-          FileContent:32/integer-unsigned-big>>,
+          FileContent/binary>>,
       case gen_tcp:send(ClientSocket, Payload) of
         ok ->
           big_file(ClientSocket, FD, ChunkIndex + 1);
