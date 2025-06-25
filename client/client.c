@@ -15,13 +15,15 @@
 #define REQ_LENGTH 100
 #define PATH_LENGTH 100
 
-void clean(int outFd, int sockFd, char *path) {
+void clean(int outFd, int sockFd, char *path, uint8_t *buffer) {
   if (outFd)
     close(outFd);
   if (sockFd)
     close(sockFd);
   if (path != NULL)
     unlink(path);
+  if (buffer != NULL)
+    free(buffer);
 }
 
 int main() {
@@ -38,7 +40,7 @@ int main() {
 
   if (connect(sockFd, (struct sockaddr *)&servAddr, sizeof(servAddr)) < 0) {
     printf("Connection failed\n");
-    clean(false, true, NULL);
+    clean(false, true, NULL, NULL);
     exit(1);
   }
 
@@ -52,26 +54,26 @@ int main() {
   size_t reqLen = strlen(request);
   if (write(sockFd, request, reqLen) != reqLen) {
     printf("Write size error (download request)\n");
-    clean(false, true, NULL);
+    clean(false, true, NULL, NULL);
     exit(1);
   }
 
   uint8_t statusCode;
   if (read(sockFd, &statusCode, 1) != 1) {
     printf("Read size error (status byte)\n");
-    clean(false, true, NULL);
+    clean(false, true, NULL, NULL);
     exit(1);
   }
   if (statusCode == 112) {
     printf("File not found\n");
-    clean(false, true, NULL);
+    clean(false, true, NULL, NULL);
     exit(1);
   }
 
   uint32_t fileSize;
   if (read(sockFd, &fileSize, 4) != 4) {
     printf("Read size error (file size)\n");
-    clean(false, true, NULL);
+    clean(false, true, NULL, NULL);
     exit(1);
   }
   fileSize = ntohl(fileSize);
@@ -83,7 +85,7 @@ int main() {
   int outFd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
   if (!outFd) {
     printf("Error while creating the file\n");
-    clean(true, true, NULL);
+    clean(true, true, NULL, NULL);
     exit(1);
   }
 
@@ -91,30 +93,30 @@ int main() {
     uint32_t defaultChunkSize;
     if (read(sockFd, &defaultChunkSize, 4) != 4) {
       printf("Read size error (default chunk size)\n");
-      clean(true, true, path);
+      clean(true, true, path, NULL);
       exit(1);
     }
     defaultChunkSize = ntohl(defaultChunkSize);
 
-    uint8_t buffer[fileSize];
+    uint8_t *buffer = malloc(sizeof(uint8_t) * fileSize);
     uint32_t totalRead = 0;
     while (totalRead < fileSize) {
       statusCode = 0;
       if (read(sockFd, &statusCode, 1) != 1) {
         printf("Read size error (status byte)\n");
-        clean(true, true, path);
+        clean(true, true, path, buffer);
         exit(1);
       }
       if (statusCode != 111) {
         printf("Chunk error\n");
-        clean(true, true, path);
+        clean(true, true, path, buffer);
         exit(1);
       }
 
       uint16_t chunkIndex;
       if (read(sockFd, &chunkIndex, 2) != 2) {
         printf("Read size error (chunk index)\n");
-        clean(true, true, path);
+        clean(true, true, path, buffer);
         exit(1);
       }
       chunkIndex = ntohs(chunkIndex);
@@ -122,7 +124,7 @@ int main() {
       uint32_t contentSize;
       if (read(sockFd, &contentSize, 4) != 4) {
         printf("Read size error (content size)\n");
-        clean(true, true, path);
+        clean(true, true, path, buffer);
         exit(1);
       }
       contentSize = ntohl(contentSize);
@@ -132,7 +134,7 @@ int main() {
         uint32_t n = read(sockFd, buffer + bytesRead, contentSize - bytesRead);
         if (n <= 0) {
           printf("Read size error (chunk content)\n");
-          clean(true, true, path);
+          clean(true, true, path, buffer);
           exit(1);
         }
         bytesRead += n;
@@ -140,22 +142,23 @@ int main() {
 
       if (write(outFd, buffer, contentSize) != contentSize) {
         printf("Write size error (chunk content)\n");
-        clean(true, true, path);
+        clean(true, true, path, buffer);
         exit(1);
       }
       totalRead += contentSize;
     }
+    free(buffer);
   } else {
     uint8_t buffer[fileSize];
     uint32_t n = read(sockFd, buffer, fileSize);
     if (n != fileSize) {
       printf("Read size error (file size)\n");
-      clean(true, true, path);
+      clean(true, true, path, NULL);
       exit(1);
     }
     if (write(outFd, buffer, n) != n) {
       printf("Write size error (output file descriptor)\n");
-      clean(true, true, path);
+      clean(true, true, path, NULL);
     }
   }
 

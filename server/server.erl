@@ -5,7 +5,7 @@
 -include_lib("kernel/include/file.hrl").
 
 -define(PORT, 1234).
--define(CHUNK_SIZE, 1048576). % 1MB
+-define(DEFAULT_CHUNK_SIZE, 1048576). % 1MB
 -define(CHUNK, 111).
 -define(FOUR_MB, 4 * 1024 * 1024).
 -define(OK, 101).
@@ -31,16 +31,26 @@ no_injections(String) ->
 
 % Send blocks of data of 4096 bytes.
 big_file(ClientSocket, FD, ChunkIndex) ->
-  case file:read(FD, ?CHUNK_SIZE) of
+  case file:read(FD, ?DEFAULT_CHUNK_SIZE) of
     eof ->
       ok;
     {ok, FileContent} ->
       ContentSize = byte_size(FileContent),
       Payload =
-        <<?CHUNK:8/integer-unsigned-big,
-          ChunkIndex:16/integer-unsigned-big,
-          ContentSize:32/integer-unsigned-big,
-          FileContent/binary>>,
+        if ContentSize == ?DEFAULT_CHUNK_SIZE ->
+             <<?CHUNK:8/integer-unsigned-big,
+               ChunkIndex:16/integer-unsigned-big,
+               ?DEFAULT_CHUNK_SIZE:32/integer-unsigned-big,
+               FileContent:?DEFAULT_CHUNK_SIZE/binary>>;
+           % ContentSize can't never be greater than
+           % DEFAULT_CHUNK_SIZE, since we are reading
+           % DEFAULT_CHUNK_SIZE bytes in file:read().
+           true ->
+             <<?CHUNK:8/integer-unsigned-big,
+               ChunkIndex:16/integer-unsigned-big,
+               ContentSize:32/integer-unsigned-big,
+               FileContent:ContentSize/binary>>
+        end,
       case gen_tcp:send(ClientSocket, Payload) of
         ok ->
           big_file(ClientSocket, FD, ChunkIndex + 1);
@@ -76,7 +86,7 @@ send_file(ClientSocket, {FilePath, FileSize}) ->
            Payload =
              <<?OK:8/integer-unsigned-big,
                FileSize:32/integer-unsigned-big,
-               ?CHUNK_SIZE:32/integer-unsigned-big>>,
+               ?DEFAULT_CHUNK_SIZE:32/integer-unsigned-big>>,
            gen_tcp:send(ClientSocket, Payload),
            big_file(ClientSocket, FD, 0),
            ok
