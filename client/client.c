@@ -1,4 +1,5 @@
 #include <arpa/inet.h>
+#include <ctype.h>
 #include <fcntl.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -14,6 +15,10 @@
 #define INPUT_LENGTH 50
 #define REQ_LENGTH 100
 #define PATH_LENGTH 100
+#define OK 101
+#define NOT_FOUND 112
+#define BAD_REQUEST 200
+#define CHUNK 111
 
 void clean(int outFd, int sockFd, char *path, uint8_t *buffer) {
   if (outFd)
@@ -24,6 +29,28 @@ void clean(int outFd, int sockFd, char *path, uint8_t *buffer) {
     unlink(path);
   if (buffer != NULL)
     free(buffer);
+
+  return;
+}
+
+void trim(char *str) {
+  char *start = str;
+  char *end;
+
+  while (isspace((unsigned char)*start))
+    start++;
+
+  // Only spaces
+  if (*start == 0)
+    return;
+
+  end = start + strlen(start) - 1;
+  while (end > start && isspace((unsigned char)*end))
+    end--;
+
+  *(end + 1) = '\0';
+
+  return;
 }
 
 int main() {
@@ -45,8 +72,10 @@ int main() {
   }
 
   char input[INPUT_LENGTH];
+  memset(input, 0, INPUT_LENGTH);
   printf("File to download: ");
   fgets(input, INPUT_LENGTH, stdin);
+  trim(input);
 
   char request[REQ_LENGTH];
   strcpy(request, "DOWNLOAD_REQUEST ");
@@ -64,8 +93,12 @@ int main() {
     clean(false, true, NULL, NULL);
     exit(1);
   }
-  if (statusCode == 112) {
+  if (statusCode == NOT_FOUND) {
     printf("File not found\n");
+    clean(false, true, NULL, NULL);
+    exit(1);
+  } else if (statusCode == BAD_REQUEST) {
+    printf("Bad request\n");
     clean(false, true, NULL, NULL);
     exit(1);
   }
@@ -107,7 +140,7 @@ int main() {
         clean(true, true, path, buffer);
         exit(1);
       }
-      if (statusCode != 111) {
+      if (statusCode != CHUNK) {
         printf("Chunk error\n");
         clean(true, true, path, buffer);
         exit(1);

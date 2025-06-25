@@ -9,7 +9,8 @@
 -define(CHUNK, 111).
 -define(FOUR_MB, 4 * 1024 * 1024).
 -define(OK, 101).
--define(NOTFOUND, 112).
+-define(NOT_FOUND, 112).
+-define(BAD_REQUEST, 200).
 
 start() ->
   {ok, ServerSocket} =
@@ -24,12 +25,6 @@ loop(ServerSocket) ->
   end,
   loop(ServerSocket).
 
-% Avoid command injections.
-no_injections(String) ->
-  UnsafeChars = ";|&><$`'\"()\\!#~",
-  not lists:any(fun(Char) -> lists:member(Char, UnsafeChars) end, String).
-
-% Send blocks of data of 4096 bytes.
 big_file(ClientSocket, FD, ChunkIndex) ->
   case file:read(FD, ?DEFAULT_CHUNK_SIZE) of
     eof ->
@@ -70,7 +65,7 @@ small_file(ClientSocket, FD, FileSize) ->
         <<?OK:8/integer-unsigned-big, FileSize:32/integer-unsigned-big, FileContent/binary>>,
       gen_tcp:send(ClientSocket, Payload);
     {error, Reason} ->
-      gen_tcp:send(ClientSocket, <<?NOTFOUND:8/integer-unsigned-big>>),
+      gen_tcp:send(ClientSocket, <<?NOT_FOUND:8/integer-unsigned-big>>),
       error({read_failed, Reason})
   end.
 
@@ -97,14 +92,14 @@ send_file(ClientSocket, {FilePath, FileSize}) ->
   end.
 
 send_error_response(ClientSocket, StatusCode) ->
-  gen_tcp:send(ClientSocket, <<StatusCode:32/big-unsigned-integer>>).
+  gen_tcp:send(ClientSocket, <<StatusCode:8/big-unsigned-integer>>).
 
 find_file(FileName, ClientSocket) ->
   case file:read_file_info("../shared/" ++ FileName) of
     {ok, FileInfo} ->
       {"../shared/" ++ FileName, FileInfo#file_info.size};
     {error, Reason} ->
-      gen_tcp:send(ClientSocket, <<?NOTFOUND:8/integer-unsigned-big>>),
+      gen_tcp:send(ClientSocket, <<?NOT_FOUND:8/integer-unsigned-big>>),
       error({file_not_found, Reason})
   end.
 
@@ -116,24 +111,17 @@ handle_client(ClientSocket) ->
       case Tokens of
         ["DOWNLOAD_REQUEST", FileName] ->
           io:format("File requested: ~p~n", [FileName]),
-          case no_injections(FileName) of
-            false ->
-              io:format("Illegal character found~n"),
-              send_error_response(ClientSocket, 400),
-              handle_client(ClientSocket);
-            true ->
-              try
-                FileInfo = find_file(FileName, ClientSocket),
-                send_file(ClientSocket, FileInfo)
-              catch
-                error:Reason ->
-                  io:format("Error: ~p~n", [Reason]),
-                  handle_client(ClientSocket)
-              end
+          try
+            FileInfo = find_file(FileName, ClientSocket),
+            send_file(ClientSocket, FileInfo)
+          catch
+            error:Reason ->
+              io:format("Error: ~p~n", [Reason]),
+              handle_client(ClientSocket)
           end;
         _ ->
           io:format("Bad request~n"),
-          send_error_response(ClientSocket, 400),
+          send_error_response(ClientSocket, ?BAD_REQUEST),
           handle_client(ClientSocket)
       end;
     {error, closed} ->
