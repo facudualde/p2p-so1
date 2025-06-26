@@ -15,12 +15,12 @@
 #define INPUT_LENGTH 50
 #define REQ_LENGTH 100
 #define PATH_LENGTH 100
-#define OK 101
-#define CHUNK 111
-#define NOT_FOUND 112
-#define OPEN_FAILED 113
-#define READ_FAILED 114
-#define BAD_REQUEST 115
+#define STATUS_OK 101
+#define STATUS_CHUNK 111
+#define STATUS_FILE_NOT_FOUND 112
+#define STATUS_OPEN_FAILED 113
+#define STATUS_READ_FAILED 114
+#define STATUS_BAD_REQUEST 115
 
 void clean(int outFd, int sockFd, char *path, uint8_t *buffer) {
   if (outFd)
@@ -97,22 +97,22 @@ int main() {
   }
 
   switch (statusCode) {
-  case NOT_FOUND:
+  case STATUS_FILE_NOT_FOUND:
     printf("File not found on server side\n");
     clean(false, true, NULL, NULL);
     exit(1);
     break;
-  case OPEN_FAILED:
+  case STATUS_OPEN_FAILED:
     printf("Open file failed on server side\n");
     clean(false, true, NULL, NULL);
     exit(1);
     break;
-  case READ_FAILED:
+  case STATUS_READ_FAILED:
     printf("Read file failed on server side\n");
     clean(false, true, NULL, NULL);
     exit(1);
     break;
-  case BAD_REQUEST:
+  case STATUS_BAD_REQUEST:
     printf("Bad request\n");
     clean(false, true, NULL, NULL);
     exit(1);
@@ -156,7 +156,7 @@ int main() {
         clean(true, true, path, buffer);
         exit(1);
       }
-      if (statusCode != CHUNK) {
+      if (statusCode != STATUS_CHUNK) {
         printf("Chunk error\n");
         clean(true, true, path, buffer);
         exit(1);

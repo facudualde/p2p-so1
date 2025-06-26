@@ -7,12 +7,12 @@
 -define(PORT, 1234).
 -define(DEFAULT_CHUNK_SIZE, 1048576). % 1MB
 -define(FOUR_MB, 4 * 1024 * 1024).
--define(OK, 101).
--define(CHUNK, 111).
--define(NOT_FOUND, 112).
--define(OPEN_FAILED, 113).
--define(READ_FAILED, 114).
--define(BAD_REQUEST, 115).
+-define(STATUS_OK, 101).
+-define(STATUS_CHUNK, 111).
+-define(STATUS_FILE_NOT_FOUND, 112).
+-define(STATUS_OPEN_FAILED, 113).
+-define(STATUS_READ_FAILED, 114).
+-define(STATUS_BAD_REQUEST, 115).
 
 start() ->
   {ok, ServerSocket} =
@@ -37,7 +37,7 @@ big_file(ClientSocket, FD, ChunkIndex) ->
       ContentSize = byte_size(FileContent),
       Payload =
         if ContentSize == ?DEFAULT_CHUNK_SIZE ->
-             <<?CHUNK:8/integer-unsigned-big,
+             <<?STATUS_CHUNK:8/integer-unsigned-big,
                ChunkIndex:16/integer-unsigned-big,
                ?DEFAULT_CHUNK_SIZE:32/integer-unsigned-big,
                FileContent:?DEFAULT_CHUNK_SIZE/binary>>;
@@ -45,7 +45,7 @@ big_file(ClientSocket, FD, ChunkIndex) ->
            % DEFAULT_CHUNK_SIZE, since we are reading
            % DEFAULT_CHUNK_SIZE bytes in file:read().
            true ->
-             <<?CHUNK:8/integer-unsigned-big,
+             <<?STATUS_CHUNK:8/integer-unsigned-big,
                ChunkIndex:16/integer-unsigned-big,
                ContentSize:32/integer-unsigned-big,
                FileContent:ContentSize/binary>>
@@ -62,7 +62,9 @@ small_file(ClientSocket, FD, FileSize) ->
       ok;
     {ok, FileContent} ->
       Payload =
-        <<?OK:8/integer-unsigned-big, FileSize:32/integer-unsigned-big, FileContent/binary>>,
+        <<?STATUS_OK:8/integer-unsigned-big,
+          FileSize:32/integer-unsigned-big,
+          FileContent/binary>>,
       gen_tcp:send(ClientSocket, Payload);
     {error, Reason} ->
       error({read_failed, Reason})
@@ -78,7 +80,7 @@ send_file(ClientSocket, {FilePath, FileSize}) ->
            small_file(ClientSocket, FD, FileSize);
          true ->
            Payload =
-             <<?OK:8/integer-unsigned-big,
+             <<?STATUS_OK:8/integer-unsigned-big,
                FileSize:32/integer-unsigned-big,
                ?DEFAULT_CHUNK_SIZE:32/integer-unsigned-big>>,
            gen_tcp:send(ClientSocket, Payload),
@@ -119,14 +121,14 @@ handle_client(ClientSocket) ->
             send_file(ClientSocket, FileInfo)
           catch
             error:{file_not_found, Reason} ->
-              handle_error(ClientSocket, ?NOT_FOUND, Reason);
+              handle_error(ClientSocket, ?STATUS_FILE_NOT_FOUND, Reason);
             error:{open_failed, Reason} ->
-              handle_error(ClientSocket, ?OPEN_FAILED, Reason);
+              handle_error(ClientSocket, ?STATUS_OPEN_FAILED, Reason);
             error:{read_failed, Reason} ->
-              handle_error(ClientSocket, ?READ_FAILED, Reason)
+              handle_error(ClientSocket, ?STATUS_READ_FAILED, Reason)
           end;
         _ ->
-          handle_error(ClientSocket, ?BAD_REQUEST, "Bad request")
+          handle_error(ClientSocket, ?STATUS_BAD_REQUEST, "Bad request")
       end;
     {error, closed} ->
       io:format("Client disconnected~n"),
