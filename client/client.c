@@ -16,9 +16,11 @@
 #define REQ_LENGTH 100
 #define PATH_LENGTH 100
 #define OK 101
-#define NOT_FOUND 112
-#define BAD_REQUEST 200
 #define CHUNK 111
+#define NOT_FOUND 112
+#define OPEN_FAILED 113
+#define READ_FAILED 114
+#define BAD_REQUEST 115
 
 void clean(int outFd, int sockFd, char *path, uint8_t *buffer) {
   if (outFd)
@@ -93,14 +95,28 @@ int main() {
     clean(false, true, NULL, NULL);
     exit(1);
   }
-  if (statusCode == NOT_FOUND) {
-    printf("File not found\n");
+
+  switch (statusCode) {
+  case NOT_FOUND:
+    printf("File not found on server side\n");
     clean(false, true, NULL, NULL);
     exit(1);
-  } else if (statusCode == BAD_REQUEST) {
+    break;
+  case OPEN_FAILED:
+    printf("Open file failed on server side\n");
+    clean(false, true, NULL, NULL);
+    exit(1);
+    break;
+  case READ_FAILED:
+    printf("Read file failed on server side\n");
+    clean(false, true, NULL, NULL);
+    exit(1);
+    break;
+  case BAD_REQUEST:
     printf("Bad request\n");
     clean(false, true, NULL, NULL);
     exit(1);
+    break;
   }
 
   uint32_t fileSize;

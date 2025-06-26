@@ -6,11 +6,13 @@
 
 -define(PORT, 1234).
 -define(DEFAULT_CHUNK_SIZE, 1048576). % 1MB
--define(CHUNK, 111).
 -define(FOUR_MB, 4 * 1024 * 1024).
 -define(OK, 101).
+-define(CHUNK, 111).
 -define(NOT_FOUND, 112).
--define(BAD_REQUEST, 200).
+-define(OPEN_FAILED, 113).
+-define(READ_FAILED, 114).
+-define(BAD_REQUEST, 115).
 
 start() ->
   {ok, ServerSocket} =
@@ -21,7 +23,9 @@ loop(ServerSocket) ->
   case gen_tcp:accept(ServerSocket) of
     {ok, ClientSocket} ->
       io:format("Client connected!~n"),
-      spawn(?MODULE, handle_client, [ClientSocket])
+      spawn(?MODULE, handle_client, [ClientSocket]);
+    {error, Reason} ->
+      io:format("Something went wrong, the client couln't connect: ~p~n", [Reason])
   end,
   loop(ServerSocket).
 
@@ -46,12 +50,8 @@ big_file(ClientSocket, FD, ChunkIndex) ->
                ContentSize:32/integer-unsigned-big,
                FileContent:ContentSize/binary>>
         end,
-      case gen_tcp:send(ClientSocket, Payload) of
-        ok ->
-          big_file(ClientSocket, FD, ChunkIndex + 1);
-        {error, Reason2} ->
-          error({send_failed, Reason2})
-      end;
+      gen_tcp:send(ClientSocket, Payload),
+      big_file(ClientSocket, FD, ChunkIndex + 1);
     {error, Reason} ->
       error({read_failed, Reason})
   end.
@@ -65,7 +65,6 @@ small_file(ClientSocket, FD, FileSize) ->
         <<?OK:8/integer-unsigned-big, FileSize:32/integer-unsigned-big, FileContent/binary>>,
       gen_tcp:send(ClientSocket, Payload);
     {error, Reason} ->
-      gen_tcp:send(ClientSocket, <<?NOT_FOUND:8/integer-unsigned-big>>),
       error({read_failed, Reason})
   end.
 
@@ -94,14 +93,18 @@ send_file(ClientSocket, {FilePath, FileSize}) ->
 send_error_response(ClientSocket, StatusCode) ->
   gen_tcp:send(ClientSocket, <<StatusCode:8/big-unsigned-integer>>).
 
-find_file(FileName, ClientSocket) ->
+find_file(FileName) ->
   case file:read_file_info("../shared/" ++ FileName) of
     {ok, FileInfo} ->
       {"../shared/" ++ FileName, FileInfo#file_info.size};
     {error, Reason} ->
-      gen_tcp:send(ClientSocket, <<?NOT_FOUND:8/integer-unsigned-big>>),
       error({file_not_found, Reason})
   end.
+
+handle_error(ClientSocket, StatusCode, Reason) ->
+  io:format("Error: ~p~n", [Reason]),
+  send_error_response(ClientSocket, StatusCode),
+  handle_client(ClientSocket).
 
 handle_client(ClientSocket) ->
   case gen_tcp:recv(ClientSocket, 0) of
@@ -112,17 +115,18 @@ handle_client(ClientSocket) ->
         ["DOWNLOAD_REQUEST", FileName] ->
           io:format("File requested: ~p~n", [FileName]),
           try
-            FileInfo = find_file(FileName, ClientSocket),
+            FileInfo = find_file(FileName),
             send_file(ClientSocket, FileInfo)
           catch
-            error:Reason ->
-              io:format("Error: ~p~n", [Reason]),
-              handle_client(ClientSocket)
+            error:{file_not_found, Reason} ->
+              handle_error(ClientSocket, ?NOT_FOUND, Reason);
+            error:{open_failed, Reason} ->
+              handle_error(ClientSocket, ?OPEN_FAILED, Reason);
+            error:{read_failed, Reason} ->
+              handle_error(ClientSocket, ?READ_FAILED, Reason)
           end;
         _ ->
-          io:format("Bad request~n"),
-          send_error_response(ClientSocket, ?BAD_REQUEST),
-          handle_client(ClientSocket)
+          handle_error(ClientSocket, ?BAD_REQUEST, "Bad request")
       end;
     {error, closed} ->
       io:format("Client disconnected~n"),
