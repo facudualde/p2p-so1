@@ -1,7 +1,7 @@
 
-shared/
 downloads/
-nodo.erl/
-main/
-main.beam/
-nodo.beam/
+nodo.erl
+main
+nodo.beam
+*.beam
+nodo.beam

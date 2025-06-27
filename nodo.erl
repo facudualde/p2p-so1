@@ -71,6 +71,10 @@ loop(Socket, MyId, MyRequestedIds, KnownNodes) ->
       MsgStr = binary_to_list(Msg),
       CurrentTime = erlang:monotonic_time(second),
       case string:tokens(MsgStr, " \n") of
+        ["GET_ID"] ->
+        Response = <<"ID ", MyId/binary, "\n">>,
+        gen_udp:send(Socket, Ip,  _Port, Response),
+        loop(Socket, MyId, MyRequestedIds, KnownNodes);
         ["HELLO", NodeId, PortStr] ->
           case NodeId =:= binary_to_list(MyId) of
             true ->
@@ -81,7 +85,12 @@ loop(Socket, MyId, MyRequestedIds, KnownNodes) ->
               io:format("Se recibió HELLO de ~s en ~p:~p~n", [NodeId, Ip, Port]),
               loop(Socket, MyId, MyRequestedIds, ActiveNodes)
           end;
-
+         ["GET_FILES"] ->
+              
+              FileListBinary = list_to_binary(string:join(shared_files(), ",")),
+              Response = << FileListBinary/binary>>,
+              gen_udp:send(Socket, Ip, _Port, Response),
+              loop(Socket, MyId, MyRequestedIds, KnownNodes);
         ["NAME_REQUEST", ReqId] ->
           case ReqId =:= binary_to_list(MyId) orelse lists:member(ReqId, MyRequestedIds) of
             true ->
