@@ -14,9 +14,15 @@ start_node() ->
     {ok, Socket} ->
       Id = get_valid_id(Socket, []),
       io:format("El ID del nodo es: ~s~n", [Id]),
-      shared_files(),
+      Files = shared_files(),
+      io:format("Archivos compartidos: ~p~n", [Files]),
+      KnownNodesFromFile = nodes_registry:load(),
+      CurrentTime = os:system_time(second),
+      KnownNodesSaved = maps:map(fun(_Key, Val) ->
+        Val#{last_seen => CurrentTime}
+      end, KnownNodesFromFile),
       spawn(fun() -> send_hello(Socket, Id, ?UDP_PORT) end),
-      loop(Socket, Id, [binary_to_list(Id)], #{});
+      loop(Socket, Id, [binary_to_list(Id)], KnownNodesSaved);
     {error, Reason} ->
       io:format("Error al iniciar el servidor UDP: ~p~n", [Reason]),
       {error, Reason}
@@ -69,7 +75,6 @@ loop(Socket, MyId, MyRequestedIds, KnownNodes) ->
     {udp, Socket, Ip, _Port, Msg} ->
       inet:setopts(Socket, [{active, true}]),
       MsgStr = binary_to_list(Msg),
-      CurrentTime = erlang:monotonic_time(second),
       case string:tokens(MsgStr, " \n") of
         ["GET_ID"] ->
         Response = <<"ID ", MyId/binary, "\n">>,
@@ -81,7 +86,14 @@ loop(Socket, MyId, MyRequestedIds, KnownNodes) ->
               loop(Socket, MyId, MyRequestedIds, KnownNodes);
             false ->
               Port = list_to_integer(PortStr),
-              ActiveNodes = maps:put(NodeId, #{ip => Ip, port => Port,last_seen=>CurrentTime}, KnownNodes),
+              CurrentTime = os:system_time(second),
+                NodeInfo = #{
+                    ip => list_to_binary(inet:ntoa(Ip)),
+                    port => Port,
+                    last_seen => CurrentTime
+                },
+              ActiveNodes = maps:put(list_to_binary(NodeId), NodeInfo, KnownNodes),
+              nodes_registry:save(ActiveNodes),
               io:format("Se recibió HELLO de ~s en ~p:~p~n", [NodeId, Ip, Port]),
               loop(Socket, MyId, MyRequestedIds, ActiveNodes)
           end;
@@ -123,5 +135,5 @@ shared_files() ->
   end.
 
 remove_inactive_nodes(Nodes, Timeout) ->
-  CurrentTime = erlang:monotonic_time(second),
+  CurrentTime = os:system_time(second),
   maps:filter(fun(_NodeId, #{last_seen := LastSeen}) ->CurrentTime - LastSeen =< Timeout end,Nodes).
