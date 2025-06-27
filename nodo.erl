@@ -85,7 +85,7 @@ loop(Socket, MyId, MyRequestedIds, KnownNodes) ->
               io:format("Se recibió HELLO de ~s en ~p:~p~n", [NodeId, Ip, Port]),
               loop(Socket, MyId, MyRequestedIds, ActiveNodes)
           end;
-         ["GET_FILES"] ->
+        ["GET_FILES"] ->
               
               FileListBinary = list_to_binary(string:join(shared_files(), ",")),
               Response = << FileListBinary/binary>>,
