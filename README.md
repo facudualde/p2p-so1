@@ -1,1 +1,2 @@
-Initial commit!
+Compilar con make
+Ejecutar con ./main

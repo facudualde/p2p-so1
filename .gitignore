@@ -5,3 +5,5 @@ main
 nodo.beam
 *.beam
 nodo.beam
+client.c
+*.o

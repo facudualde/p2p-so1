@@ -1,40 +1,10 @@
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
+#include "utils.h"
 
-#define SERVER_UDP_PORT 12346
-#define BUFFER_SIZE 1024
-
-void send_command(int sock, struct sockaddr_in* server_addr, const char* command) {
-    if (sendto(sock, command, strlen(command), 0, (struct sockaddr*)server_addr, sizeof(*server_addr)) < 0) {
-        perror("Error enviando comando");
-    }
-}
-
-void receive_answer(int sock) {
-    char buffer[BUFFER_SIZE];
-    struct sockaddr_in from_addr;
-    socklen_t from_len = sizeof(from_addr);
-
-    int bytes_recived = recvfrom(sock, buffer, sizeof(buffer) - 1, 0, (struct sockaddr*)&from_addr, &from_len);
-    if (bytes_recived < 0) {
-        perror("Error recibiendo respuesta");
-        return;
-    }
-
-    buffer[bytes_recived] = '\0';
-    printf("Respuesta del servidor: %s\n", buffer);
-}
-
-void menu(int udp_sock, struct sockaddr_in* server_addr) {
+void menu(int udp_sock, struct sockaddr_in* server_addr, int tcp_socket) {
     char comando[BUFFER_SIZE];
 
     while (1) {
-        printf("Ingrese un comando (id_nodo, listar_mis_archivos, salir): ");
+        printf("Ingrese un comando (id_nodo, listar_mis_archivos,descargar ,salir): ");
         printf("CLI> ");
         fgets(comando, sizeof(comando), stdin);
         comando[strcspn(comando, "\n")] = 0;
@@ -45,6 +15,8 @@ void menu(int udp_sock, struct sockaddr_in* server_addr) {
         } else if (strcmp(comando, "listar_mis_archivos") == 0) {
             send_command(udp_sock, server_addr, "GET_FILES");
             receive_answer(udp_sock);
+        } else if (strcmp(comando, "descargar ") == 0) {
+            printf("fucion descargar %s\n", comando);
         } else if (strcmp(comando, "salir") == 0) {
             printf("Saliendo\n");
             break;
@@ -54,23 +26,32 @@ void menu(int udp_sock, struct sockaddr_in* server_addr) {
     }
 }
 
+void setup_sockaddr(struct sockaddr_in* addr, const char* ip, uint16_t port) {
+    memset(addr, 0, sizeof(struct sockaddr_in));
+    addr->sin_family = AF_INET;
+    addr->sin_port = htons(port);
+    if (inet_pton(AF_INET, ip, &addr->sin_addr) <= 0) {
+        handle_error("Invalid IP address");
+    }
+}
+
+
 int main() {
-    int udp_sock;
-    struct sockaddr_in server_addr;
+    int udp_sock,tcp_sock;
+    struct sockaddr_in udp_server,tcp_server;
+    setup_sockaddr(&udp_server, SERVER_ADDRESS, SERVER_UDP_PORT); // para udp
+    setup_sockaddr(&tcp_server, SERVER_ADDRESS, TCP_PORT); // para tcp
 
 
     udp_sock = socket(AF_INET, SOCK_DGRAM, 0);
-    if (udp_sock < 0) {
-        perror("Error creando socket UDP");
-        exit(EXIT_FAILURE);
-    }
-    memset(&server_addr, 0, sizeof(server_addr));
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(SERVER_UDP_PORT);
-    inet_pton(AF_INET, "127.0.0.1", &server_addr.sin_addr);
+    tcp_sock = socket(AF_INET, SOCK_STREAM, 0);
+    error_handler(udp_sock, "Error creando socket UDP") ?exit(EXIT_FAILURE):0; 
+    error_handler(tcp_sock, "Error creando socket TCP") ?exit(EXIT_FAILURE):0; 
 
 
-    menu(udp_sock, &server_addr);
+
+
+    menu(udp_sock, &udp_server,tcp_sock);
 
     close(udp_sock);
     return 0;
