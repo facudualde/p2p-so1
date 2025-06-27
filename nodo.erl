@@ -1,5 +1,5 @@
 -module(nodo).
--export([shared_files/0, get_random_id/0, start_node/0, send_hello/3, loop/4]).
+-export([shared_files/0, get_random_id/0, start_node/0, send_hello/3, loop/4,remove_inactive_nodes/2]).
 -define(UDP_PORT, 12346).
 
 get_random_id() ->
@@ -69,6 +69,7 @@ loop(Socket, MyId, MyRequestedIds, KnownNodes) ->
     {udp, Socket, Ip, _Port, Msg} ->
       inet:setopts(Socket, [{active, true}]),
       MsgStr = binary_to_list(Msg),
+      CurrentTime = erlang:monotonic_time(second),
       case string:tokens(MsgStr, " \n") of
         ["HELLO", NodeId, PortStr] ->
           case NodeId =:= binary_to_list(MyId) of
@@ -76,9 +77,9 @@ loop(Socket, MyId, MyRequestedIds, KnownNodes) ->
               loop(Socket, MyId, MyRequestedIds, KnownNodes);
             false ->
               Port = list_to_integer(PortStr),
-              NewMap = maps:put(NodeId, #{ip => Ip, port => Port}, KnownNodes),
+              ActiveNodes = maps:put(NodeId, #{ip => Ip, port => Port,last_seen=>CurrentTime}, KnownNodes),
               io:format("Se recibió HELLO de ~s en ~p:~p~n", [NodeId, Ip, Port]),
-              loop(Socket, MyId, MyRequestedIds, NewMap)
+              loop(Socket, MyId, MyRequestedIds, ActiveNodes)
           end;
 
         ["NAME_REQUEST", ReqId] ->
@@ -96,6 +97,10 @@ loop(Socket, MyId, MyRequestedIds, KnownNodes) ->
           io:format("Mensaje no reconocido: ~s~n", [MsgStr]),
           loop(Socket, MyId, MyRequestedIds, KnownNodes)
       end
+    
+      after 5000 ->
+      ActiveNodes = remove_inactive_nodes(KnownNodes, 45),
+      loop(Socket, MyId, MyRequestedIds, ActiveNodes)
   end.
 
 shared_files() ->
@@ -108,3 +113,6 @@ shared_files() ->
       []
   end.
 
+remove_inactive_nodes(Nodes, Timeout) ->
+  CurrentTime = erlang:monotonic_time(second),
+  maps:filter(fun(_NodeId, #{last_seen := LastSeen}) ->CurrentTime - LastSeen =< Timeout end,Nodes).
