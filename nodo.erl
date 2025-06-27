@@ -1,5 +1,5 @@
 -module(nodo).
--export([shared_files/0, get_random_id/0, start_node/0, send_hello/3, loop/4,remove_inactive_nodes/2]).
+-export([shared_files/0, get_random_id/0, start_node/1, send_hello/3, loop/4,remove_inactive_nodes/2,start/0,command_loop/2,get_valid_id/2]).
 -define(UDP_PORT, 12346).
 
 get_random_id() ->
@@ -8,19 +8,6 @@ get_random_id() ->
     [lists:nth(rand:uniform(length(AllowedChars)), AllowedChars)] ++ Acc
   end, [], lists:seq(1, 4)).
 
-start_node() ->
-  rand:seed(exsplus, os:timestamp()),
-  case gen_udp:open(?UDP_PORT, [binary, {active, true}, {reuseaddr, true}, {broadcast, true}, {ip, {0,0,0,0}}]) of
-    {ok, Socket} ->
-      Id = get_valid_id(Socket, []),
-      io:format("El ID del nodo es: ~s~n", [Id]),
-      shared_files(),
-      spawn(fun() -> send_hello(Socket, Id, ?UDP_PORT) end),
-      loop(Socket, Id, [binary_to_list(Id)], #{});
-    {error, Reason} ->
-      io:format("Error al iniciar el servidor UDP: ~p~n", [Reason]),
-      {error, Reason}
-  end.
 
 get_valid_id(Socket, TriedIds) ->
   Id = get_random_id(),
@@ -57,6 +44,48 @@ wait_invalid_name(Socket, Id) ->
     false
   end.
 
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+%CLIENTE AGREGADO TEST
+
+start() ->
+    io:format("Iniciando nodo...~n"),
+    case gen_udp:open(?UDP_PORT, [binary, {active, true}, {reuseaddr, true}, {broadcast, true}, {ip, {0,0,0,0}}]) of
+        {ok, Socket} ->
+            Id = get_valid_id(Socket, []),
+            io:format("Nodo iniciado con ID: ~s~n", [Id]),
+            spawn(fun() -> start_node(Socket) end), 
+            spawn(fun() -> send_hello(Socket, Id) end),
+            command_loop(Socket, Id);             
+        {error, Reason} ->
+            io:format("Error al iniciar el nodo: ~p~n", [Reason])
+    end.
+
+command_loop(Socket, Id) ->
+    io:format("Comandos disponibles:~n 1. ID_Nodo~n 2. GET_FILES~n 3. EXIT~nCLI> "),
+    case io:get_line("") of
+        "1\n" ->
+            io:format("El ID del Nodo es :~i ~n", [Id]),
+            command_loop(Socket, Id);
+        "2\n" ->
+            io:format("Archivos compartidos:~n"),
+            Files = shared_files(),
+            io:format("~p~n", [Files]),
+            command_loop(Socket, Id);
+        "3\n" ->
+            io:format("Cerrando nodo...~n"),
+            gen_udp:close(Socket),
+            io:format("Nodo cerrado.~n");
+        _ ->
+            io:format("Comando no reconocido. Intente nuevamente.~n"),
+            command_loop(Socket, Id)
+    end.
+
+start_node(Socket) ->
+    loop(Socket, get_random_id(), [], #{}).
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 send_hello(Socket, Id, Port) ->
   Mesg = <<"HELLO ", Id/binary, " ", (integer_to_binary(Port))/binary, "\n">>,
   gen_udp:send(Socket, {255,255,255,255}, ?UDP_PORT, Mesg),
