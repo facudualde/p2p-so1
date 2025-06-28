@@ -7,3 +7,4 @@ nodo.beam
 nodo.beam
 client.c
 *.o
+*.lock
