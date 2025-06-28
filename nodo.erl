@@ -1,5 +1,5 @@
 -module(nodo).
--export([shared_files/0, get_random_id/0, start_node/1, send_hello/3, loop/4,remove_inactive_nodes/2,start/0,command_loop/2,get_valid_id/2]).
+-export([shared_files/0, get_random_id/0, start_node/2, send_hello/3, loop/4,remove_inactive_nodes/2,start/0,command_loop/2,get_valid_id/2]).
 -define(UDP_PORT, 12346).
 
 get_random_id() ->
@@ -54,9 +54,10 @@ start() ->
         {ok, Socket} ->
             Id = get_valid_id(Socket, []),
             io:format("Nodo iniciado con ID: ~s~n", [Id]),
-            spawn(fun() -> start_node(Socket) end), 
-            spawn(fun() -> send_hello(Socket, Id) end),
-            command_loop(Socket, Id);             
+            PidLoop = spawn(fun() -> loop(Socket, Id, [binary_to_list(Id)], #{}) end),
+            PidSend = spawn(fun() -> send_hello(Socket, Id, ?UDP_PORT) end),
+            spawn(fun() -> cli_loop(Socket, Id, PidLoop) end);
+
         {error, Reason} ->
             io:format("Error al iniciar el nodo: ~p~n", [Reason])
     end.
@@ -81,10 +82,35 @@ command_loop(Socket, Id) ->
             command_loop(Socket, Id)
     end.
 
-start_node(Socket) ->
-    loop(Socket, get_random_id(), [], #{}).
+start_node(Socket,MyId) ->
+    loop(Socket, MyId, [binary_to_list(MyId)], #{}).
 
 
+loop(Socket, MyId, MyRequestedIds, KnownNodes) ->
+    receive
+        {udp, Socket, Ip, _Port, Msg} ->
+            inet:setopts(Socket, [{active, true}]),
+            % Procesar mensaje UDP igual que antes
+            ...
+            loop(Socket, MyId, MyRequestedIds, KnownNodes);
+
+        {get_id, FromPid} ->
+            FromPid ! {id_response, MyId},
+            loop(Socket, MyId, MyRequestedIds, KnownNodes);
+
+        {stop} ->
+            io:format("Loop detenido.~n"),
+            ok;
+
+        Other ->
+            io:format("Mensaje desconocido en loop: ~p~n", [Other]),
+            loop(Socket, MyId, MyRequestedIds, KnownNodes)
+    after 5000 ->
+        ActiveNodes = remove_inactive_nodes(KnownNodes, 45),
+        loop(Socket, MyId, MyRequestedIds, ActiveNodes)
+    end.
+
+  
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 send_hello(Socket, Id, Port) ->
   Mesg = <<"HELLO ", Id/binary, " ", (integer_to_binary(Port))/binary, "\n">>,
@@ -94,10 +120,13 @@ send_hello(Socket, Id, Port) ->
   send_hello(Socket, Id, Port).
 
 loop(Socket, MyId, MyRequestedIds, KnownNodes) ->
+  
   receive
     {udp, Socket, Ip, _Port, Msg} ->
       inet:setopts(Socket, [{active, true}]),
       MsgStr = binary_to_list(Msg),
+          io:format("Loop iniciado para recibir mensajes...~s ~n", [MsgStr]),
+
       CurrentTime = erlang:monotonic_time(second),
       case string:tokens(MsgStr, " \n") of
         ["GET_ID"] ->
