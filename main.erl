@@ -10,6 +10,7 @@
     handle_get_files/4,
     handle_get_id/5,
     handle_hello/6,
+    
     handle_name_request/7,
     client_loop/2
 ]).
@@ -78,32 +79,60 @@ send_hello(Socket, Id, Port) ->
     send_hello(Socket, Id, Port).
 
 udp_loop(Socket, MyId, MyRequestedIds, KnownNodes) ->
-    receive
-        {udp, Socket, Ip, Port, Msg} ->
-            inet:setopts(Socket, [{active, true}]),
-            MsgStr = binary_to_list(Msg),
-            ActiveNodes = 
-                case string:tokens(MsgStr, " \n") of
-                    ["GET_ID"] ->
-                        handle_get_id(Socket, Ip, Port, MyId, KnownNodes);
-                    ["HELLO", NodeId, PortStr] ->
-                        handle_hello(Socket, Ip, PortStr, NodeId, MyId, KnownNodes);
-                    ["GET_FILES"] ->
-                        handle_get_files(Socket, Ip, Port, KnownNodes);
-                    ["NAME_REQUEST", ReqId] ->
-                        handle_name_request(Socket, Ip, Port, ReqId, MyId, MyRequestedIds, KnownNodes);
-                    _Other ->
-                        io:format("Mensaje no reconocido: ~s~n", [MsgStr]),
-                        KnownNodes
-                end,
-            udp_loop(Socket, MyId, MyRequestedIds, ActiveNodes)
-    after 5000 ->
-        ActiveNodes = remove_inactive_nodes(KnownNodes, 45),
-        udp_loop(Socket, MyId, MyRequestedIds, ActiveNodes)
-    end.
+  receive
+    stop ->
+      io:format("Cerrando la CLI...~n"),
+      gen_udp:close(Socket),
+      exit(normal);
+    {udp, Socket, Ip, _Port, Msg} ->
+      MsgStr = binary_to_list(Msg),
+      case string:tokens(MsgStr, " \n") of
+        ["GET_ID"] ->
+        Response = <<"ID ", MyId/binary, "\n">>,
+        gen_udp:send(Socket, Ip,  _Port, Response),
+        udp_loop(Socket, MyId, MyRequestedIds, KnownNodes);
+        ["HELLO", NodeId, PortStr] ->
+          case NodeId =:= binary_to_list(MyId) of
+            true ->
+              udp_loop(Socket, MyId, MyRequestedIds, KnownNodes);
+            false ->
+              Port = list_to_integer(PortStr),
+              CurrentTime = os:system_time(second),
+                NodeInfo = #{
+                    ip => list_to_binary(inet:ntoa(Ip)),
+                    port => Port,
+                    last_seen => CurrentTime
+                },
+              ActiveNodes = maps:put(list_to_binary(NodeId), NodeInfo, KnownNodes),
+              nodes_registry:save(ActiveNodes),
+              io:format("Se recibió HELLO de ~s en ~p:~p~n", [NodeId, Ip, Port]),
+              udp_loop(Socket, MyId, MyRequestedIds, ActiveNodes)
+          end;
+         ["GET_FILES"] ->
+              FileListBinary = list_to_binary(string:join(shared_files(), ",")),
+              Response = << FileListBinary/binary>>,
+              gen_udp:send(Socket, Ip, _Port, Response),
+              udp_loop(Socket, MyId, MyRequestedIds, KnownNodes);
+        ["NAME_REQUEST", ReqId] ->
+          case ReqId =:= binary_to_list(MyId) orelse lists:member(ReqId, MyRequestedIds) of
+            true ->
+              gen_udp:send(Socket, Ip, ?UDP_PORT, <<"INVALID_NAME ", ReqId/binary, "\n">>),
+              io:format("Enviado INVALID_NAME a ~p por ID repetido: ~s~n", [Ip, ReqId]),
+              udp_loop(Socket, MyId, MyRequestedIds, KnownNodes);
+            false ->
+              io:format("NAME_REQUEST recibido de ~p con ID ~s~n", [Ip, ReqId]),
+              udp_loop(Socket, MyId, MyRequestedIds, KnownNodes)
+          end;
 
-
-
+        _Other ->
+          io:format("Mensaje no reconocido: ~s~n", [MsgStr]),
+          udp_loop(Socket, MyId, MyRequestedIds, KnownNodes)
+      end
+    
+      after 5000 ->
+      ActiveNodes = remove_inactive_nodes(KnownNodes, 45),
+      udp_loop(Socket, MyId, MyRequestedIds, ActiveNodes)
+  end.
 handle_get_id(Socket, Ip, Port, MyId, KnownNodes) ->
     Response = <<"ID ", MyId/binary, "\n">>,
     gen_udp:send(Socket, Ip, Port, Response),
@@ -111,6 +140,7 @@ handle_get_id(Socket, Ip, Port, MyId, KnownNodes) ->
     KnownNodes.
 
 handle_hello(_Socket, Ip, PortStr, NodeId, MyId, KnownNodes) ->
+    io:format("Comparando NodeId ~p con MyId ~p~n", [NodeId, MyId]),
     case NodeId =:= binary_to_list(MyId) of
         true ->
             KnownNodes;
@@ -124,7 +154,7 @@ handle_hello(_Socket, Ip, PortStr, NodeId, MyId, KnownNodes) ->
             },
             ActiveNodes = maps:put(list_to_binary(NodeId), NodeInfo, KnownNodes),
             %% Commented out nodes_registry:save/1 to avoid undefined function error
-            %% nodes_registry:save(ActiveNodes),
+            nodes_registry:save(ActiveNodes),
             io:format("Se recibió HELLO de ~s en ~p:~p~n", [NodeId, Ip, Port]),
             ActiveNodes
     end.
@@ -173,18 +203,21 @@ shared_files() ->
 start() ->
     io:format("Iniciando nodo...~n"),
     
-    % Inicializar el socket UDP primero
     case gen_udp:open(?UDP_PORT, [binary, {active, true}, {reuseaddr, true}, {broadcast, true}, {ip, {0, 0, 0, 0}}]) of
         {ok, UDPSocket} ->
             Id = get_valid_id(UDPSocket, []),
             io:format("Nodo iniciado con ID: ~s~n", [Id]),
-            
+            KnownNodesFromFile = nodes_registry:load(),
             spawn(?MODULE, send_hello, [UDPSocket, Id, ?TCP_PORT]),
-            spawn(?MODULE, udp_loop, [UDPSocket, Id, [], #{}]),
+            CurrentTime = os:system_time(second),
+            KnownNodesSaved = maps:map(fun(_Key, Val) ->
+                Val#{last_seen => CurrentTime}
+            end, KnownNodesFromFile),
+            udp_loop( UDPSocket, Id, [binary_to_list(Id)], KnownNodesSaved),
             case gen_tcp:listen(?TCP_PORT, [binary, {active, false}, {reuseaddr, true}, {packet, 0}]) of
                 {ok, TcpSocket} ->
-                    spawn(?MODULE, tcp_loop, [TcpSocket, Id]) ;
-    
+                   spawn(?MODULE, tcp_loop, [TcpSocket, Id]) ;
+
                 {error, Reason} ->
                     io:format("Error al abrir el socket TCP: ~p~n", [Reason])
             end;
