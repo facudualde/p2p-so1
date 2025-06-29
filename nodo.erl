@@ -20,7 +20,7 @@ start_node() ->
       KnownNodesSaved = maps:map(fun(_Key, Val) ->
         Val#{last_seen => CurrentTime}
       end, KnownNodesFromFile),
-      spawn(fun() -> send_hello(Socket, Id, ?UDP_PORT) end),
+      register(hello_sender, spawn(fun() -> send_hello(Socket, Id, ?UDP_PORT) end)),
       loop(Socket, Id, [binary_to_list(Id)], KnownNodesSaved);
     {error, Reason} ->
       io:format("Error al iniciar el servidor UDP: ~p~n", [Reason]),
@@ -46,9 +46,11 @@ cli_loop(NodeId, NodoPid) ->
       end,
       cli_loop(NodeId, NodoPid);
     "3\n" ->
-      io:format("Cerrando nodo...~n"),
+      io:format("Cerrando CLI...~n"),
       NodoPid ! stop,
-      ok;
+      hello_sender ! stop,
+      timer:sleep(1000),
+      init:stop();
     _ ->
       io:format("Comando no reconocido. Ingrese 1, 2 o 3. ~n"),
       cli_loop(NodeId, NodoPid)
@@ -90,11 +92,17 @@ wait_invalid_name(Socket, Id) ->
   end.
 
 send_hello(Socket, Id, Port) ->
-  Mesg = <<"HELLO ", Id/binary, " ", (integer_to_binary(Port))/binary, "\n">>,
-  gen_udp:send(Socket, {255,255,255,255}, ?UDP_PORT, Mesg),
-  io:format("Enviando HELLO...: ~s~n", [Mesg]),
-  timer:sleep(15000 + rand:uniform(5000)), 
-  send_hello(Socket, Id, Port).
+  receive
+    stop ->
+      io:format("Se detuvo el envío de HELLO~n"),
+      ok
+  after 0 ->
+    Mesg = <<"HELLO ", Id/binary, " ", (integer_to_binary(Port))/binary, "\n">>,
+    gen_udp:send(Socket, {255,255,255,255}, ?UDP_PORT, Mesg),
+    io:format("Enviando HELLO...: ~s~n", [Mesg]),
+    timer:sleep(15000 + rand:uniform(5000)), 
+    send_hello(Socket, Id, Port).
+  end.
 
 loop(Socket, MyId, MyRequestedIds, KnownNodes) ->
   receive
