@@ -1,6 +1,7 @@
 -module(nodo).
--export([shared_files/0, get_random_id/0, start_node/0, send_hello/3, loop/4,remove_inactive_nodes/2, cli_loop/2]).
+-export([shared_files/0, get_random_id/0,file_match/1, start_node/0, send_hello/3, loop/4,remove_inactive_nodes/2, cli_loop/2]).
 -define(UDP_PORT, 12346).
+-include_lib("kernel/include/file.hrl").
 
 get_random_id() ->
   AllowedChars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
@@ -27,11 +28,22 @@ start_node() ->
       {error, Reason}
   end.
 
+file_match(Pattern) ->
+  case file:list_dir("compartida") of
+    {ok, Files} ->
+      lists:filter(
+        fun(Filename) -> filename:match(Filename, Pattern) end,
+        Files
+      );
+    {error, _} -> []
+  end.
+
 cli_loop(NodeId, NodoPid) ->
   io:format("~nCLI << Elegir un comando:~n"),
   io:format("1. id_nodo~n"),
   io:format("2. listar_mis_archivos~n"),
-  io:format("3. salir~n"),
+  io:format("3. buscar archivo~n"),
+  io:format("4. salir~n"),
   case io:get_line("") of
     "1\n" ->
       io:format("El ID del nodo es: ~s~n", [NodeId]),
@@ -46,6 +58,15 @@ cli_loop(NodeId, NodoPid) ->
       end,
       cli_loop(NodeId, NodoPid);
     "3\n" ->
+      PatternLine = io:get_line("Ingresá un request: "),
+      Pattern = string:trim(PatternLine),
+      Message = <<"SEARCH_REQUEST ", (list_to_binary(NodeId))/binary, " ", (list_to_binary(Pattern))/binary, "\n">>,
+      {ok, Socket} = gen_udp:open(0, [binary, {broadcast, true}]),
+      gen_udp:send(Socket, {255,255,255,255}, ?UDP_PORT, Message),
+      gen_udp:close(Socket),
+      io:format("El search request fue enviado.~n"),
+      cli_loop(NodeId, NodoPid);
+    "4\n" ->
       io:format("Cerrando CLI...~n"),
       NodoPid ! stop,
       hello_sender ! stop,
@@ -149,7 +170,19 @@ loop(Socket, MyId, MyRequestedIds, KnownNodes) ->
               io:format("NAME_REQUEST recibido de ~p con ID ~s~n", [Ip, ReqId]),
               loop(Socket, MyId, MyRequestedIds, KnownNodes)
           end;
-
+          ["SEARCH_REQUEST", NodoID, Pattern] ->
+          Files = file_match(Pattern),
+          lists:foreach(fun(File) ->
+              case file:read_file_info(filename:join("compartida", File)) of
+                  {ok, FileInfo} ->
+                      Size = FileInfo#file_info.size,
+                      Response = io_lib:format("SEARCH_RESPONSE ~s ~s ~p~n", [NodoID, File, Size]),
+                      gen_udp:send(Socket, Ip, _Port, list_to_binary(Response));
+                  _ ->
+                      ok
+              end
+          end, Files),
+          loop(Socket, MyId, MyRequestedIds, KnownNodes);
         _Other ->
           io:format("Mensaje no reconocido: ~s~n", [MsgStr]),
           loop(Socket, MyId, MyRequestedIds, KnownNodes)
