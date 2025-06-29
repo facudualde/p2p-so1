@@ -1,5 +1,5 @@
 -module(nodo).
--export([shared_files/0, get_random_id/0, start_node/0, send_hello/3, loop/4,remove_inactive_nodes/2]).
+-export([shared_files/0, get_random_id/0, start_node/0, send_hello/3, loop/4,remove_inactive_nodes/2, cli_loop/2]).
 -define(UDP_PORT, 12346).
 
 get_random_id() ->
@@ -14,8 +14,7 @@ start_node() ->
     {ok, Socket} ->
       Id = get_valid_id(Socket, []),
       io:format("El ID del nodo es: ~s~n", [Id]),
-      Files = shared_files(),
-      io:format("Archivos compartidos: ~p~n", [Files]),
+      spawn(fun() -> cli_loop(Id, self()) end),
       KnownNodesFromFile = nodes_registry:load(),
       CurrentTime = os:system_time(second),
       KnownNodesSaved = maps:map(fun(_Key, Val) ->
@@ -28,6 +27,33 @@ start_node() ->
       {error, Reason}
   end.
 
+cli_loop(NodeId, NodoPid) ->
+  io:format("~nCLI << Elegir un comando:~n"),
+  io:format("1. id_nodo~n"),
+  io:format("2. listar_mis_archivos~n"),
+  io:format("3. salir~n"),
+  case io:get_line("") of
+    "1\n" ->
+      io:format("El ID del nodo es: ~s~n", [NodeId]),
+      cli_loop(NodeId, NodoPid);
+    "2\n" ->
+      case file:list_dir("compartida") of
+        {ok, Files} ->
+          io:format("Archivos compartidos:~n"),
+          lists:foreach(fun(F) -> io:format(" - ~s~n", [F]) end, Files);
+        {error, Reason} ->
+          io:format("Error al leer 'compartida': ~p~n", [Reason])
+      end,
+      cli_loop(NodeId, NodoPid);
+    "3\n" ->
+      io:format("Cerrando nodo...~n"),
+      NodoPid ! stop,
+      ok;
+    _ ->
+      io:format("Comando no reconocido. Ingrese 1, 2 o 3. ~n"),
+      cli_loop(NodeId, NodoPid)
+  end.
+        
 get_valid_id(Socket, TriedIds) ->
   Id = get_random_id(),
   case lists:member(Id, TriedIds) of
@@ -72,8 +98,11 @@ send_hello(Socket, Id, Port) ->
 
 loop(Socket, MyId, MyRequestedIds, KnownNodes) ->
   receive
+    stop ->
+      io:format("Cerrando la CLI...~n"),
+      gen_udp:close(Socket),
+      exit(normal);
     {udp, Socket, Ip, _Port, Msg} ->
-      inet:setopts(Socket, [{active, true}]),
       MsgStr = binary_to_list(Msg),
       case string:tokens(MsgStr, " \n") of
         ["GET_ID"] ->
@@ -98,7 +127,6 @@ loop(Socket, MyId, MyRequestedIds, KnownNodes) ->
               loop(Socket, MyId, MyRequestedIds, ActiveNodes)
           end;
          ["GET_FILES"] ->
-              
               FileListBinary = list_to_binary(string:join(shared_files(), ",")),
               Response = << FileListBinary/binary>>,
               gen_udp:send(Socket, Ip, _Port, Response),
