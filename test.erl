@@ -110,11 +110,11 @@ cli_loop(NodeId, NodoPid) ->
   io:format("~nCLI << Elegir un comando:~n"),
   io:format("1. id_nodo~n"),
   io:format("2. listar_mis_archivos~n"),
-  io:format("3. buscar archivo~n"),
-  io:format("4. buscar_por_tcp~n"),
-    io:format("5. Descargar archivo~n"),
+  
+  io:format("3. buscar_por_tcp~n"),
+  io:format("4. Descargar archivo~n"),
 
-  io:format("6. salir~n"),
+  io:format("5. salir~n"),
   case io:get_line("") of
     "1\n" ->
       io:format("El ID del nodo es: ~s~n", [NodeId]),
@@ -128,25 +128,17 @@ cli_loop(NodeId, NodoPid) ->
           io:format("Error al leer 'compartida': ~p~n", [Reason])
       end,
       cli_loop(NodeId, NodoPid);
+
     "3\n" ->
-      PatternLine = io:get_line("Ingresá un request: "),
-      Pattern = string:trim(PatternLine),
-      Message = <<"SEARCH_REQUEST ", NodeId/binary, " ", (list_to_binary(Pattern))/binary, "\n">>,
-      {ok, Socket} = gen_udp:open(0, [binary, {broadcast, true}]),
-      gen_udp:send(Socket, {255, 255, 255, 255}, ?UDP_PORT, Message),
-      gen_udp:close(Socket),
-      io:format("El search request fue enviado.~n"),
-      cli_loop(NodeId, NodoPid);
-    "4\n" ->
       PatternLine = io:get_line("Buscar por TCP (nombre o patrón): "),
       Pattern = string:trim(PatternLine),
       buscar_tcp(NodeId, Pattern, NodoPid),
       cli_loop(NodeId, NodoPid);
-    "5\n" -> 
+    "4\n" -> 
       FileNameLine = io:get_line("Ingrese el nombre del archivo a descargar: "),
       descargar_tcp(NodeId, string:trim(FileNameLine)),
       cli_loop(NodeId, NodoPid);
-    "6\n" ->
+    "5\n" ->
       io:format("Cerrando CLI...~n"),
       NodoPid ! stop,
       hello_sender ! stop,
@@ -359,25 +351,7 @@ loop(Socket, MyId, MyRequestedIds, KnownNodes) ->
               io:format("NAME_REQUEST recibido de ~p con ID ~s~n", [Ip, ReqId]),
               loop(Socket, MyId, MyRequestedIds, KnownNodes)
           end;
-        ["SEARCH_RESPONSE", NodoID, File, Size] ->  
-            io:format("SEARCH_RESPONSE recibido de ~s: archivo ~s de tamaño ~p bytes~n", [NodoID, File, Size]),
-            loop(Socket, MyId, MyRequestedIds, KnownNodes);
-        ["SEARCH_REQUEST", NodoID, Pattern] ->
-            Files = file_match(Pattern),
-          lists:foreach(fun(File) ->
-                           case file:read_file_info(
-                                  filename:join("compartida", File))
-                           of
-                             {ok, FileInfo} ->
-                               Size = FileInfo#file_info.size,
-                               Response =
-                               io_lib:format("SEARCH_RESPONSE ~s ~s ~p~n", [NodoID, File, Size]),
-                               gen_udp:send(Socket, Ip, ?UDP_PORT, list_to_binary(Response));
-                             _ -> ok
-                           end
-                        end,
-                        Files),
-          loop(Socket, MyId, MyRequestedIds, KnownNodes);
+      
         _Other ->
           io:format("Mensaje no reconocido: ~s~n", [MsgStr]),
           loop(Socket, MyId, MyRequestedIds, KnownNodes)
@@ -419,9 +393,7 @@ remove_inactive_nodes(Nodes, Timeout) ->
                ChunkIndex:16/integer-unsigned-big,
                ?DEFAULT_CHUNK_SIZE:32/integer-unsigned-big,
                FileContent:?DEFAULT_CHUNK_SIZE/binary>>;
-           % ContentSize can't never be greater than
-           % DEFAULT_CHUNK_SIZE, since we are reading
-           % DEFAULT_CHUNK_SIZE bytes in file:read().
+
            true ->
              <<?STATUS_CHUNK:8/integer-unsigned-big,
                ChunkIndex:16/integer-unsigned-big,
@@ -448,8 +420,7 @@ small_file(ClientSocket, FD, FileSize) ->
       error({read_failed, Reason})
   end.
 
-% What happens if we failed sending the zip? Do we try it
-% again?
+
 send_file(ClientSocket, {FilePath, FileSize}) ->
   io:format("File size: ~p~n", [FileSize]),
   case file:open(FilePath, [read, binary]) of
