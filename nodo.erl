@@ -101,6 +101,7 @@ cli_loop(NodeId, NodoPid) ->
       Message = <<"SEARCH_REQUEST ", NodeId/binary, " ", (list_to_binary(Pattern))/binary, "\n">>,
       {ok, Socket} = gen_udp:open(0, [binary, {broadcast, true}]),
       gen_udp:send(Socket, {255, 255, 255, 255}, ?UDP_PORT, Message),
+      
       gen_udp:close(Socket),
       io:format("El search request fue enviado.~n"),
       cli_loop(NodeId, NodoPid);

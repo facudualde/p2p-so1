@@ -4,7 +4,7 @@
 
 -include_lib("kernel/include/file.hrl").
 
--define(PORT, 1234).
+-define(PORT, 12345).
 -define(DEFAULT_CHUNK_SIZE, 1048576). % 1MB
 -define(FOUR_MB, 4 * 1024 * 1024).
 -define(STATUS_OK, 101).
@@ -123,6 +123,19 @@ handle_client(ClientSocket) ->
             error:{read_failed, Reason} ->
               handle_error(ClientSocket, ?STATUS_READ_FAILED, Reason)
           end;
+        ["SEARCH_REQUEST", FromNode, Pattern] ->
+          io:format("Recibí SEARCH_REQUEST desde ~s: patrón ~s~n", [FromNode, Pattern]),
+          Files = nodo:file_match(Pattern),
+          lists:foreach(fun(File) ->
+            case file:read_file_info("compartida/" ++ File) of
+              {ok, FileInfo} ->
+                Size = FileInfo#file_info.size,
+                Response = io_lib:format("SEARCH_RESPONSE ~s ~s ~p~n", [FromNode, File, Size]),
+                gen_tcp:send(ClientSocket, list_to_binary(Response));
+              _ -> ok
+            end
+          end, Files),
+          gen_tcp:close(ClientSocket); %% Cerrá el socket después
         _ ->
           handle_error(ClientSocket, ?STATUS_BAD_REQUEST, "Bad request")
       end;
