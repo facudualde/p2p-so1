@@ -30,9 +30,9 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        user: loki
+        user: odin
     container_name: odin
-    user: loki
+    user: odin
     networks:
       - asgard
     command: sleep infinity
