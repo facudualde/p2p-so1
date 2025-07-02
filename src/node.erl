@@ -1,6 +1,7 @@
+
 -module(node).
 
--export([shared_files/0, tcp_loop/1, receive_all/2, receive_big_file/4,
+-export([ tcp_loop/1, receive_all/2, receive_big_file/4,
          collect_tcp_responses/1, descargar_tcp/2, file_match/1, run/0, send_hello/3,
          handle_tcp_request/1, receive_file/2, process_line/1, loop/4, remove_inactive_nodes/2,
          cli/1, buscar_tcp/2, receive_small_file/3, receive_chunks/5, handle_file_error/1]).
@@ -17,32 +18,21 @@
 -define(STATUS_BAD_REQUEST, 115).
 
 -include_lib("kernel/include/file.hrl").
-
 run() ->
-  % rand:seed(exsplus, os:timestamp()),
-  % Open udp socket on port specified by a macro.
-  case gen_udp:open(?UDP_PORT,
-                    [binary,
-                     {active, true},
-                     {reuseaddr, true},
-                     {broadcast, true},
-                     {ip, {0, 0, 0, 0}}])
-  of
+  case gen_udp:open(?UDP_PORT, [binary, {active, true}, {reuseaddr, true}, {broadcast, true}, {ip, {0, 0, 0, 0}}]) of
     {ok, UdpSocket} ->
-      case gen_tcp:listen(?TCP_PORT, [binary, {active, false}, {reuseaddr, true}, {packet, 0}])
-      of
+      case gen_tcp:listen(?TCP_PORT, [binary, {active, false}, {reuseaddr, true}]) of
         {ok, TcpSocket} ->
-          % Get a valid id.
+          io:format("Obteniendo un ID válido...~n"),
           Id = get_valid_id(UdpSocket, []),
           register(node, self()),
-          spawn(?MODULE, cli, [Id]),
           spawn(?MODULE, tcp_loop, [TcpSocket]),
+          spawn(?MODULE, cli, [Id]),
           KnownNodesFromFile = utils:load_register(),
           CurrentTime = os:system_time(second),
-          KnownNodesSaved =
-            maps:map(fun(_Key, Val) -> Val#{last_seen => CurrentTime} end, KnownNodesFromFile),
+          KnownNodesSaved = maps:map(fun(_Key, Val) -> Val#{last_seen => CurrentTime} end, KnownNodesFromFile),
           register(hello_sender, spawn(fun() -> send_hello(UdpSocket, Id, ?TCP_PORT) end)),
-          loop(UdpSocket, Id, [binary_to_list(Id)], KnownNodesSaved);
+          loop(UdpSocket, Id, [Id], KnownNodesSaved);
         {error, Reason} ->
           io:format("Error al iniciar el servidor TCP: ~p~n", [Reason]),
           {error, Reason}
@@ -52,26 +42,22 @@ run() ->
       {error, Reason}
   end.
 
+%% Maneja errores enviando una respuesta y cerrando el socket.
 handle_error(Socket, StatusCode, Reason) ->
   io:format("Error: ~p~n", [Reason]),
   send_error_response(Socket, StatusCode),
   gen_tcp:close(Socket).
 
+%% Busca archivos que coincidan con un patron en el directorio compartido.
 file_match(Pattern) ->
-  case file:list_dir("../compartida") of
+  case file:list_dir("compartida") of
     {ok, Files} ->
       Tokens = string:tokens(Pattern, "."),
       case Tokens of
         [Name, Extension] ->
-          io:format("Tokens: ~p | Name: ~s | Extension: ~s ~n", [Tokens, Name, Extension]),
           case Name of
             "*" ->
-              Cons =
-                lists:filter(fun(Filename) ->
-                                Ext = filename:extension(Filename),
-                                Ext =:= "." ++ Extension
-                             end,
-                             Files),
+              Cons = lists:filter(fun(Filename) -> filename:extension(Filename) =:= "." ++ Extension end, Files),
               io:format("Archivos compartidos: ~p ~n", [Cons]),
               Cons;
             _ ->
@@ -86,6 +72,35 @@ file_match(Pattern) ->
       []
   end.
 
+%% Interfaz de Línea de Comandos (CLI) para interacción con el nodo.
+%% - Proporciona un menú interactivo que permite a los usuarios realizar varias operaciones relacionadas con el nodo.
+%%
+%%
+%% 2. Según el comando ingresado por el usuario:
+%%    - **Comando "1"**: 
+%%      - Muestra el identificador (`NodeId`) del nodo actual.
+%%      - Llama recursivamente a `cli/1` para volver al menú.
+%%    - **Comando "2"**: 
+%%      - Llama a `utils:shared_files/0` para obtener una lista de los archivos compartidos por el nodo.
+%%      - Itera sobre los archivos compartidos y los imprime.
+%%      - Llama recursivamente a `cli/1` para volver al menú.
+%%    - **Comando "3"**: 
+%%      - Solicita al usuario un nombre o patrón de archivo mediante `io:get_line/1`.
+%%      - Llama a `buscar_tcp/2` para buscar el patrón en los nodos conocidos.
+%%      - Vuelve al menú tras completar la búsqueda.
+%%    - **Comando "4"**: 
+%%      - Solicita al usuario el nombre de un archivo mediante `io:get_line/1`.
+%%      - Llama a `descargar_tcp/2` para intentar descargar el archivo desde nodos conocidos.
+%%      - Vuelve al menú tras completar la operación.
+%%    - **Comando "5"**: 
+%%      - Cierra la CLI y el nodo actual de manera ordenada:
+%%        - Guarda el estado de los nodos conocidos usando `utils:save_register/1`.
+%%        - Detiene procesos auxiliares (`node`, `hello_sender`).
+%%        - Llama a `init:stop/0` para finalizar el programa.
+%%    - **Comando no reconocido**: 
+%%      - Imprime un mensaje de error y muestra nuevamente el menú.
+%%
+
 cli(NodeId) ->
   io:format("~nLista de comandos:~n"),
   io:format("1: ver id~n"),
@@ -98,14 +113,9 @@ cli(NodeId) ->
       io:format("El ID del nodo es: ~s~n", [NodeId]),
       cli(NodeId);
     "2\n" ->
-      case file:list_dir("../compartida") of
-        {ok, Files} ->
-          io:format("Archivos compartidos:~n"),
-          lists:foreach(fun(F) -> io:format(" - ~s~n", [F]) end, Files);
-        {error, Reason} ->
-          io:format("Error al leer 'compartida': ~p~n", [Reason]),
-          error({list_dir_failed, Reason})
-      end,
+      Files = utils:shared_files(),
+      io:format("Archivos compartidos:~n"),
+      lists:foreach(fun(F) -> io:format(" - ~s~n", [F]) end, Files),
       cli(NodeId);
     "3\n" ->
       PatternLine = io:get_line("Buscar por TCP (nombre o patrón): "),
@@ -118,6 +128,7 @@ cli(NodeId) ->
       cli(NodeId);
     "5\n" ->
       io:format("Cerrando CLI...~n"),
+      utils:save_register(#{}),
       node ! stop,
       hello_sender ! stop,
       timer:sleep(1),
@@ -127,29 +138,32 @@ cli(NodeId) ->
       cli(NodeId)
   end.
 
+%% Solicita un archivo por TCP desde nodos conocidos.
+%% - Busca en una lista de nodos registrados y solicita el archivo especificado a cada nodo.
+%% - Si la conexión TCP es exitosa, envía una solicitud de descarga y guarda el archivo recibido.
+%% - En caso de error, registra la falla.
 descargar_tcp(_NodeId, FileName) ->
   KnownNodes = utils:load_register(),
   maps:foreach(fun(_Id, #{<<"ip">> := IpBin}) ->
                   io:format("Solicitando archivo ~s al nodo ~s~n", [FileName, IpBin]),
                   spawn(fun() ->
-                           case gen_tcp:connect(binary_to_list(IpBin),
-                                                ?TCP_PORT,
-                                                [binary, {active, false}])
-                           of
+                           case gen_tcp:connect(binary_to_list(IpBin), ?TCP_PORT, [binary, {active, false}]) of
                              {ok, Socket} ->
-                               Msg =
-                                 <<"DOWNLOAD_REQUEST ", (list_to_binary(FileName))/binary, "\n">>,
+                               Msg = <<"DOWNLOAD_REQUEST ", (list_to_binary(FileName))/binary, "\n">>,
                                gen_tcp:send(Socket, Msg),
                                receive_file(Socket, FileName),
                                gen_tcp:close(Socket);
                              {error, Reason} ->
-                               io:format("No se pudo conectar a ~s:~p - ~p~n",
-                                         [IpBin, ?TCP_PORT, Reason])
+                               io:format("No se pudo conectar a ~s:~p - ~p~n", [IpBin, ?TCP_PORT, Reason])
                            end
                         end)
                end,
                KnownNodes).
 
+%% Loop que maneja conexiones TCP entrantes.
+%% - Acepta conexiones TCP entrantes en un socket dado.
+%% - Para cada cliente conectado, inicia un proceso que maneja las solicitudes del cliente.
+%% - Reintenta continuamente aceptar nuevas conexiones.
 tcp_loop(TcpSocket) ->
   case gen_tcp:accept(TcpSocket) of
     {ok, ClientSocket} ->
@@ -159,6 +173,13 @@ tcp_loop(TcpSocket) ->
     {error, Reason} ->
       io:format("Error aceptando conexión: ~p~n", [Reason])
   end.
+
+%% Maneja las solicitudes recibidas por un socket TCP.
+%% - Procesa diferentes tipos de solicitudes:
+%%   - "SEARCH_REQUEST": Busca archivos que coincidan con un patrón y responde con los resultados.
+%%   - "DOWNLOAD_REQUEST": Envío del archivo solicitado al cliente.
+%%   - Maneja errores como solicitudes no reconocidas o fallas en la lectura de archivos.
+%% - Cierra el socket al finalizar el procesamiento.
 
 handle_tcp_request(Socket) ->
   case gen_tcp:recv(Socket, 0) of
@@ -170,13 +191,10 @@ handle_tcp_request(Socket) ->
           io:format("Recibí SEARCH_REQUEST de ~s: patrón ~s~n", [NodoID, Pattern]),
           Files = file_match(Pattern),
           lists:foreach(fun(File) ->
-                           case file:read_file_info(
-                                  filename:join("../compartida", File))
-                           of
+                           case file:read_file_info(filename:join("compartida", File)) of
                              {ok, FileInfo} ->
                                Size = FileInfo#file_info.size,
-                               Response =
-                                 io_lib:format("SEARCH_RESPONSE ~s ~s ~p~n", [NodoID, File, Size]),
+                               Response = io_lib:format("SEARCH_RESPONSE ~s ~s ~p~n", [NodoID, File, Size]),
                                gen_tcp:send(Socket, list_to_binary(Response));
                              _ -> ok
                            end
@@ -208,37 +226,65 @@ handle_tcp_request(Socket) ->
       io:format("Tiempo de espera agotado~n"),
       ok
   end.
+%%% Buscar archivos en nodos conocidos usando TCP.
+%% - Esta función permite realizar una búsqueda distribuida de archivos entre los nodos registrados.
+%% 
+%% Detalles de implementación:
+%% 1. Carga la lista de nodos conocidos utilizando `utils:load_register()`, donde cada nodo tiene asociado su dirección IP.
+%% 2. Imprime un mensaje indicando el inicio de la búsqueda con el patrón especificado.
+%% 3. Itera sobre la lista de nodos conocidos (`KnownNodes`) y para cada nodo:
+%%    - Imprime el nodo objetivo y el patrón de búsqueda.
+%%    - Inicia un proceso separado para manejar la conexión con ese nodo utilizando `spawn/1`:
+%%      - Intenta establecer una conexión TCP con el nodo en el puerto definido por `?TCP_PORT`.
+%%      - Si la conexión es exitosa:
+%%        - Construye un mensaje `SEARCH_REQUEST` que incluye:
+%%          - El identificador del nodo que realiza la solicitud (`NodeId`).
+%%          - El patrón de búsqueda (`Pattern`).
+%%        - Envía el mensaje al nodo remoto utilizando `gen_tcp:send/2`.
+%%        - Invoca la función `receive_all/2` para recibir todas las respuestas del nodo remoto y enviarlas al proceso principal (`Self`).
+%%        - Cierra la conexión TCP una vez finalizada la comunicación.
+%%      - Si la conexión falla:
+%%        - Imprime un mensaje indicando que no se pudo conectar al nodo y registra la causa del error.
+%% 4. Una vez que se han enviado todas las solicitudes, invoca la función `collect_tcp_responses/1` con un tiempo límite (`Timeout`).
+%%    - Esta función espera respuestas de búsqueda y procesa cada línea recibida para identificar archivos que coincidan con el patrón.
+%% 5. Manejo de errores:
+%%    - Si no se puede establecer la conexión TCP con algún nodo, la función captura y registra los errores, pero continúa con la búsqueda en los demás nodos.
+ 
 
 buscar_tcp(NodeId, Pattern) ->
   KnownNodes = utils:load_register(),
   Self = self(),
-
+  io:format("Buscando archivos con patrón ~s en nodos conocidos...~n", [Pattern]),
   maps:foreach(fun(_Id, #{<<"ip">> := IpBin}) ->
-                  io:format("Buscando en nodo ~s con patrón ~s~n", [IpBin, Pattern]),
-                  spawn(fun() ->
-                           case gen_tcp:connect(binary_to_list(IpBin),
-                                                ?TCP_PORT,
-                                                [binary, {active, false}])
-                           of
-                             {ok, Socket} ->
-                               Msg =
-                                 <<"SEARCH_REQUEST ",
-                                   NodeId/binary,
-                                   " ",
-                                   (list_to_binary(Pattern))/binary,
-                                   "\n">>,
-                               gen_tcp:send(Socket, Msg),
-                               receive_all(Socket, Self),
-                               gen_tcp:close(Socket);
-                             {error, Reason} ->
-                               io:format("No se pudo conectar a ~s:~p - ~p~n",
-                                         [IpBin, ?TCP_PORT, Reason])
-                           end
-                        end)
-               end,
-               KnownNodes),
+                io:format("Buscando en nodo ~s con patrón ~s~n", [IpBin, Pattern]),
+                spawn(fun() ->
+                         case gen_tcp:connect(binary_to_list(IpBin),
+                                              ?TCP_PORT,
+                                              [binary, {active, false}])
+                         of
+                           {ok, Socket} ->
+                             Msg =
+                               <<"SEARCH_REQUEST ",
+                                 NodeId/binary,
+                                 " ",
+                                 (list_to_binary(Pattern))/binary,
+                                 "\n">>,
+                             gen_tcp:send(Socket, Msg),
+                             receive_all(Socket, Self),
+                             gen_tcp:close(Socket);
+                           {error, Reason} ->
+                             io:format("No se pudo conectar a ~s:~p - ~p~n",
+                                       [IpBin, ?TCP_PORT, Reason])
+                         end
+                      end)
+             end,
+             KnownNodes),
   collect_tcp_responses(5000).
 
+
+%% Recibe todas las respuestas del socket y las envía al proceso principal.
+%% - Lee mensajes del socket asociado en bucles hasta que se agote el tiempo o la conexión se cierre.
+%% - Envía cada mensaje recibido al proceso que inició la solicitud.
 receive_all(Socket, Self) ->
   case gen_tcp:recv(Socket, 0, 3000) of
     {ok, Data} ->
@@ -249,7 +295,9 @@ receive_all(Socket, Self) ->
     {error, closed} ->
       ok
   end.
-
+%% Recoge las respuestas de búsqueda recibidas por TCP.
+%% - Escucha mensajes con respuestas de búsqueda durante un tiempo límite especificado.
+%% - Procesa cada respuesta recibida utilizando una función auxiliar.
 collect_tcp_responses(Timeout) ->
   receive
     {search_response_tcp, Msg} ->
@@ -261,6 +309,9 @@ collect_tcp_responses(Timeout) ->
     io:format("Fin de recolección de respuestas por TCP.~n")
   end.
 
+%% Procesa cada línea de respuesta recibida por TCP.
+%% - Analiza las líneas recibidas para identificar respuestas válidas al patrón de búsqueda.
+%% - Imprime los detalles de los archivos encontrados o registra respuestas no reconocidas.
 process_line(Line) ->
   case string:tokens(Line, " ") of
     ["SEARCH_RESPONSE", NodoID, File, SizeStr] ->
@@ -269,6 +320,7 @@ process_line(Line) ->
       io:format("Respuesta no reconocida: ~s~n", [Line])
   end.
 
+%% Obtiene un ID valido para el nodo actual.
 get_valid_id(UdpSocket, TriedIds) ->
   Id = utils:get_random_id(),
   case lists:member(Id, TriedIds) of
@@ -292,6 +344,7 @@ get_valid_id(UdpSocket, TriedIds) ->
       end
   end.
 
+%% Envia una solicitud de nombre usando UDP.
 send_name_request(UdpSocket, Id) ->
   Msg = <<"NAME_REQUEST ", (list_to_binary(Id))/binary, "\n">>,
   case gen_udp:send(UdpSocket, {255, 255, 255, 255}, ?UDP_PORT, Msg) of
@@ -301,6 +354,7 @@ send_name_request(UdpSocket, Id) ->
       error({failed_name_request, Reason})
   end.
 
+%% Espera una respuesta de nombre invalido.
 wait_invalid_name(Socket, Id) ->
   receive
     {udp, Socket, _Ip, _Port, Msg} ->
@@ -315,6 +369,7 @@ wait_invalid_name(Socket, Id) ->
     false
   end.
 
+%% Envia mensajes HELLO periodicamente para anunciar el nodo.
 send_hello(Socket, Id, Port) ->
   receive
     stop ->
@@ -327,6 +382,7 @@ send_hello(Socket, Id, Port) ->
     send_hello(Socket, Id, Port)
   end.
 
+%% Loop principal para manejar mensajes UDP y actualizar nodos conocidos.
 loop(Socket, MyId, MyRequestedIds, KnownNodes) ->
   receive
     stop ->
@@ -349,7 +405,6 @@ loop(Socket, MyId, MyRequestedIds, KnownNodes) ->
                   last_seen => CurrentTime},
               ActiveNodes = maps:put(list_to_binary(NodeId), NodeInfo, KnownNodes),
               utils:save_register(ActiveNodes),
-              io:format("Se recibió HELLO de ~s en ~p:~p~n", [NodeId, Ip, Port]),
               loop(Socket, MyId, MyRequestedIds, ActiveNodes)
           end;
         ["NAME_REQUEST", ReqId] ->
@@ -372,23 +427,15 @@ loop(Socket, MyId, MyRequestedIds, KnownNodes) ->
     loop(Socket, MyId, MyRequestedIds, ActiveNodes)
   end.
 
-shared_files() ->
-  case file:list_dir("../compartida") of
-    {ok, Filenames} ->
-      io:fwrite("Archivos compartidos: ~p ~n", [Filenames]),
-      Filenames;
-    {error, Reason} ->
-      io:fwrite("Error al leer carpeta compartida: ~p ~n", [Reason]),
-      []
-  end.
 
+%% Elimina nodos inactivos de la lista basada en un tiempo de espera especificado.
 remove_inactive_nodes(Nodes, Timeout) ->
   CurrentTime = os:system_time(second),
   maps:filter(fun(_NodeId, #{last_seen := LastSeen}) -> CurrentTime - LastSeen =< Timeout
               end,
               Nodes).
 
-% Funciones para enviar archivos
+%% Envio de archivos mayores a 4 MB
 big_file(ClientSocket, FD, ChunkIndex) ->
   case file:read(FD, ?DEFAULT_CHUNK_SIZE) of
     eof ->
@@ -455,7 +502,7 @@ send_error_response(ClientSocket, StatusCode) ->
   gen_tcp:send(ClientSocket, <<StatusCode:8/big-unsigned-integer>>).
 
 find_file(FileName) ->
-  FilePath = filename:join("../compartida", FileName),
+  FilePath = filename:join("compartida", FileName),
   io:format("Buscando archivo en: ~s~n", [FilePath]),
   case file:read_file_info(FilePath) of
     {ok, FileInfo} ->
@@ -465,7 +512,7 @@ find_file(FileName) ->
       error({file_not_found, Reason})
   end.
 
-% Funciones para recibir archivos
+%% Recepcion de archivos
 receive_file(Socket, FileName) ->
   io:format("Recibiendo archivo: ~s~n", [FileName]),
   case gen_tcp:recv(Socket, 5, 10000) of
@@ -491,7 +538,8 @@ receive_file(Socket, FileName) ->
 receive_small_file(Socket, FileName, FileSize) ->
   case gen_tcp:recv(Socket, FileSize, 10000) of
     {ok, FileContent} ->
-      FilePath = filename:join("../descargas", FileName),
+      FilePath = filename:join("descargas", FileName),
+      io:format("Guardando archivo pequeño en: ~s~n", [FilePath]),
       case file:write_file(FilePath, FileContent) of
         ok ->
           io:format("Archivo ~s descargado exitosamente (~p bytes)~n", [FileName, FileSize]);
@@ -503,7 +551,7 @@ receive_small_file(Socket, FileName, FileSize) ->
   end.
 
 receive_big_file(Socket, FileName, TotalSize, ChunkSize) ->
-  FilePath = filename:join("../descargas", FileName),
+  FilePath = filename:join("descargas", FileName),
   case file:open(FilePath, [write, binary]) of
     {ok, FD} ->
       try
@@ -529,8 +577,6 @@ receive_chunks(Socket, FD, ReceivedBytes, TotalSize, _ChunkSize)
           case file:write(FD, ChunkData) of
             ok ->
               NewReceivedBytes = ReceivedBytes + ActualChunkSize,
-              io:format("Progreso: ~p/~p bytes (~.1f%)~n",
-                        [NewReceivedBytes, TotalSize, NewReceivedBytes / TotalSize * 100]),
               receive_chunks(Socket, FD, NewReceivedBytes, TotalSize, ActualChunkSize);
             {error, Reason} ->
               io:format("Error al escribir chunk: ~p~n", [Reason])
