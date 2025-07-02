@@ -1,3 +1,13 @@
+build:
+	rebar3 compile
+	erlc -o src src/*.erl 
+
+run:
+	erl -noshell -pa src -s node run -s init stop
+
+clean:
+	rm src/*.beam
+
 docker-up:
 	sudo docker-compose up --build -d
 
