@@ -1,9 +1,4 @@
 _build/
 downloads/
-nodo.erl
-main
-nodo.beam
-*.beam
-nodo.beam
-nodo.erl
-server.erl
+shared/
+**/*.beam
