@@ -1,0 +1,42 @@
+version: '3.8'
+
+services:
+  thor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        user: thor
+    container_name: thor
+    user: thor              # run container as this user
+    networks:
+      - asgard
+    command: sleep infinity
+
+  loki:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        user: loki
+    container_name: loki
+    user: loki
+    networks:
+      - asgard
+    command: sleep infinity
+
+  odin:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        user: loki
+    container_name: odin
+    user: loki
+    networks:
+      - asgard
+    command: sleep infinity
+
+networks:
+  asgard:
+    driver: bridge
