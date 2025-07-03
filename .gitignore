@@ -3,3 +3,4 @@ downloads/
 shared/
 **/*.beam
 erl_crash.dump
+nodes_register.json

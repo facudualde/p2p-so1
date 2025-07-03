@@ -19,8 +19,6 @@
 -include_lib("kernel/include/file.hrl").
 
 run() ->
-  % rand:seed(exsplus, os:timestamp()),
-  % Open udp socket on port specified by a macro.
   case gen_udp:open(?UDP_PORT,
                     [binary,
                      {active, true},
