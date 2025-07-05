@@ -23,7 +23,6 @@ load_register() ->
   end.
 
 save_register(Map) ->
-  io:format("MAP: ~p~n", [Map]),
   file:write_file(?NODES_REGISTER_PATH, jsx:encode(Map)).
 
 update_register(Id, Ip, Port) ->

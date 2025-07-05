@@ -1,557 +1,166 @@
 -module(node).
 
--export([shared_files/0, tcp_loop/1, receive_all/2, receive_big_file/4,
-         collect_tcp_responses/1, descargar_tcp/2, file_match/1, run/0, send_hello/3,
-         handle_tcp_request/1, receive_file/2, process_line/1, loop/4, remove_inactive_nodes/2,
-         cli/1, buscar_tcp/2, receive_small_file/3, receive_chunks/5, handle_file_error/1]).
+-export([run/0, invalid_name/3, get_id/2, send_name_request/2, join_network/2, hello/2,
+         remove_inactive_nodes/0]).
 
 -define(UDP_PORT, 12346).
 -define(TCP_PORT, 12345).
--define(DEFAULT_CHUNK_SIZE, 1048576).
--define(FOUR_MB, 4 * 1024 * 1024).
--define(STATUS_OK, 101).
--define(STATUS_CHUNK, 111).
--define(STATUS_FILE_NOT_FOUND, 112).
--define(STATUS_OPEN_FAILED, 113).
--define(STATUS_READ_FAILED, 114).
--define(STATUS_BAD_REQUEST, 115).
+% -define(DEFAULT_CHUNK_SIZE, 1048576).
+% -define(FOUR_MB, 4 * 1024 * 1024).
+% -define(STATUS_OK, 101).
+% -define(STATUS_CHUNK, 111).
+% -define(STATUS_FILE_NOT_FOUND, 112).
+% -define(STATUS_OPEN_FAILED, 113).
+% -define(STATUS_READ_FAILED, 114).
+% -define(STATUS_BAD_REQUEST, 115).
+-define(TIMEOUT_INVALID_NAME, 10000).
 
--include_lib("kernel/include/file.hrl").
+% -include_lib("kernel/include/file.hrl").
 
-run() ->
-  case gen_udp:open(?UDP_PORT,
-                    [binary,
-                     {active, true},
-                     {reuseaddr, true},
-                     {broadcast, true},
-                     {ip, {0, 0, 0, 0}}])
-  of
-    {ok, UdpSocket} ->
-      case gen_tcp:listen(?TCP_PORT, [binary, {active, false}, {reuseaddr, true}, {packet, 0}])
-      of
-        {ok, TcpSocket} ->
-          % Get a valid id.
-          Id = get_valid_id(UdpSocket, []),
-          register(node, self()),
-          spawn(?MODULE, cli, [Id]),
-          spawn(?MODULE, tcp_loop, [TcpSocket]),
-          KnownNodesFromFile = utils:load_register(),
-          CurrentTime = os:system_time(second),
-          KnownNodesSaved =
-            maps:map(fun(_Key, Val) -> Val#{last_seen => CurrentTime} end, KnownNodesFromFile),
-          register(hello_sender, spawn(fun() -> send_hello(UdpSocket, Id, ?TCP_PORT) end)),
-          loop(UdpSocket, Id, [binary_to_list(Id)], KnownNodesSaved);
-        {error, Reason} ->
-          io:format("Error al iniciar el servidor TCP: ~p~n", [Reason]),
-          {error, Reason}
-      end;
-    {error, Reason} ->
-      io:format("Error al iniciar el servidor UDP: ~p~n", [Reason]),
-      {error, Reason}
-  end.
-
-handle_error(Socket, StatusCode, Reason) ->
-  io:format("Error: ~p~n", [Reason]),
-  send_error_response(Socket, StatusCode),
-  gen_tcp:close(Socket).
-
-file_match(Pattern) ->
-  case file:list_dir("../compartida") of
-    {ok, Files} ->
-      Tokens = string:tokens(Pattern, "."),
-      case Tokens of
-        [Name, Extension] ->
-          io:format("Tokens: ~p | Name: ~s | Extension: ~s ~n", [Tokens, Name, Extension]),
-          case Name of
-            "*" ->
-              Cons =
-                lists:filter(fun(Filename) ->
-                                Ext = filename:extension(Filename),
-                                Ext =:= "." ++ Extension
-                             end,
-                             Files),
-              io:format("Archivos compartidos: ~p ~n", [Cons]),
-              Cons;
-            _ ->
-              lists:filter(fun(Filename) -> Filename == Pattern end, Files)
-          end;
-        _ ->
-          io:format("Patrón inválido: ~s~n", [Pattern]),
-          []
-      end;
-    {error, Reason} ->
-      io:format("Error al listar directorio: ~p~n", [Reason]),
-      []
-  end.
-
-cli(NodeId) ->
-  io:format("~nLista de comandos:~n"),
-  io:format("1: ver id~n"),
-  io:format("2: listar archivos~n"),
-  io:format("3: buscar archivos~n"),
-  io:format("4: descargar archivo~n"),
-  io:format("5: salir~n"),
-  case io:get_line("Comando: ") of
-    "1\n" ->
-      io:format("El ID del nodo es: ~s~n", [NodeId]),
-      cli(NodeId);
-    "2\n" ->
-      case file:list_dir("../compartida") of
-        {ok, Files} ->
-          io:format("Archivos compartidos:~n"),
-          lists:foreach(fun(F) -> io:format(" - ~s~n", [F]) end, Files);
-        {error, Reason} ->
-          io:format("Error al leer 'compartida': ~p~n", [Reason]),
-          error({list_dir_failed, Reason})
-      end,
-      cli(NodeId);
-    "3\n" ->
-      PatternLine = io:get_line("Buscar por TCP (nombre o patrón): "),
-      Pattern = string:trim(PatternLine),
-      buscar_tcp(NodeId, Pattern),
-      cli(NodeId);
-    "4\n" ->
-      FileNameLine = io:get_line("Ingrese el nombre del archivo a descargar: "),
-      descargar_tcp(NodeId, string:trim(FileNameLine)),
-      cli(NodeId);
-    "5\n" ->
-      io:format("Cerrando CLI...~n"),
-      node ! stop,
-      hello_sender ! stop,
-      timer:sleep(1),
-      init:stop();
-    _ ->
-      io:format("Comando no reconocido. Ingrese 1, 2, 3, 4 o 5. ~n"),
-      cli(NodeId)
-  end.
-
-descargar_tcp(_NodeId, FileName) ->
-  KnownNodes = utils:load_register(),
-  maps:foreach(fun(_Id, #{<<"ip">> := IpBin}) ->
-                  io:format("Solicitando archivo ~s al nodo ~s~n", [FileName, IpBin]),
-                  spawn(fun() ->
-                           case gen_tcp:connect(binary_to_list(IpBin),
-                                                ?TCP_PORT,
-                                                [binary, {active, false}])
-                           of
-                             {ok, Socket} ->
-                               Msg =
-                                 <<"DOWNLOAD_REQUEST ", (list_to_binary(FileName))/binary, "\n">>,
-                               gen_tcp:send(Socket, Msg),
-                               receive_file(Socket, FileName),
-                               gen_tcp:close(Socket);
-                             {error, Reason} ->
-                               io:format("No se pudo conectar a ~s:~p - ~p~n",
-                                         [IpBin, ?TCP_PORT, Reason])
-                           end
-                        end)
-               end,
-               KnownNodes).
-
-tcp_loop(TcpSocket) ->
-  case gen_tcp:accept(TcpSocket) of
-    {ok, ClientSocket} ->
-      io:format("Cliente conectado para búsqueda TCP~n"),
-      spawn(fun() -> handle_tcp_request(ClientSocket) end),
-      tcp_loop(TcpSocket);
-    {error, Reason} ->
-      io:format("Error aceptando conexión: ~p~n", [Reason])
-  end.
-
-handle_tcp_request(Socket) ->
-  case gen_tcp:recv(Socket, 0) of
-    {ok, Data} ->
-      Msg = lists:delete($\n, binary_to_list(Data)),
-      Tokens = string:tokens(Msg, " "),
-      case Tokens of
-        ["SEARCH_REQUEST", NodoID, Pattern] ->
-          io:format("Recibí SEARCH_REQUEST de ~s: patrón ~s~n", [NodoID, Pattern]),
-          Files = file_match(Pattern),
-          lists:foreach(fun(File) ->
-                           case file:read_file_info(
-                                  filename:join("../compartida", File))
-                           of
-                             {ok, FileInfo} ->
-                               Size = FileInfo#file_info.size,
-                               Response =
-                                 io_lib:format("SEARCH_RESPONSE ~s ~s ~p~n", [NodoID, File, Size]),
-                               gen_tcp:send(Socket, list_to_binary(Response));
-                             _ -> ok
-                           end
-                        end,
-                        Files),
-          gen_tcp:close(Socket);
-        ["DOWNLOAD_REQUEST", FileName] ->
-          try
-            FileInfo = find_file(FileName),
-            io:format("File requested: ~p~n", [FileName]),
-            send_file(Socket, FileInfo)
-          catch
-            error:{file_not_found, Reason} ->
-              handle_error(Socket, ?STATUS_FILE_NOT_FOUND, Reason);
-            error:{open_failed, Reason} ->
-              handle_error(Socket, ?STATUS_OPEN_FAILED, Reason);
-            error:{read_failed, Reason} ->
-              handle_error(Socket, ?STATUS_READ_FAILED, Reason)
-          end;
-        _ ->
-          io:format("Solicitud no reconocida: ~s~n", [Msg]),
-          handle_error(Socket, ?STATUS_BAD_REQUEST, "Bad request"),
-          gen_tcp:close(Socket)
-      end;
-    {error, closed} ->
-      io:format("Conexión cerrada por el cliente~n"),
-      ok;
-    {error, timeout} ->
-      io:format("Tiempo de espera agotado~n"),
-      ok
-  end.
-
-buscar_tcp(NodeId, Pattern) ->
-  KnownNodes = utils:load_register(),
-  Self = self(),
-
-  maps:foreach(fun(_Id, #{<<"ip">> := IpBin}) ->
-                  io:format("Buscando en nodo ~s con patrón ~s~n", [IpBin, Pattern]),
-                  spawn(fun() ->
-                           case gen_tcp:connect(binary_to_list(IpBin),
-                                                ?TCP_PORT,
-                                                [binary, {active, false}])
-                           of
-                             {ok, Socket} ->
-                               Msg =
-                                 <<"SEARCH_REQUEST ",
-                                   NodeId/binary,
-                                   " ",
-                                   (list_to_binary(Pattern))/binary,
-                                   "\n">>,
-                               gen_tcp:send(Socket, Msg),
-                               receive_all(Socket, Self),
-                               gen_tcp:close(Socket);
-                             {error, Reason} ->
-                               io:format("No se pudo conectar a ~s:~p - ~p~n",
-                                         [IpBin, ?TCP_PORT, Reason])
-                           end
-                        end)
-               end,
-               KnownNodes),
-  collect_tcp_responses(5000).
-
-receive_all(Socket, Self) ->
-  case gen_tcp:recv(Socket, 0, 3000) of
-    {ok, Data} ->
-      Self ! {search_response_tcp, Data},
-      receive_all(Socket, Self);
-    {error, timeout} ->
-      ok;
-    {error, closed} ->
-      ok
-  end.
-
-collect_tcp_responses(Timeout) ->
+invalid_name(UdpSocket, Id, Timeout) ->
+  Start = erlang:monotonic_time(millisecond),
   receive
-    {search_response_tcp, Msg} ->
-      MsgStr = binary_to_list(Msg),
-      Lines = string:tokens(MsgStr, "\n"),
-      lists:foreach(fun(Line) -> process_line(Line) end, Lines),
-      collect_tcp_responses(Timeout)
-  after Timeout ->
-    io:format("Fin de recolección de respuestas por TCP.~n")
-  end.
-
-process_line(Line) ->
-  case string:tokens(Line, " ") of
-    ["SEARCH_RESPONSE", NodoID, File, SizeStr] ->
-      io:format("Archivo ~s de nodo ~s, tamaño ~s bytes~n", [File, NodoID, SizeStr]);
-    _ ->
-      io:format("Respuesta no reconocida: ~s~n", [Line])
-  end.
-
-get_valid_id(UdpSocket, TriedIds) ->
-  Id = utils:get_random_id(),
-  case lists:member(Id, TriedIds) of
-    true ->
-      get_valid_id(UdpSocket, TriedIds);
-    false ->
-      try
-        send_name_request(UdpSocket, Id),
-        case wait_invalid_name(UdpSocket, Id) of
-          true ->
-            RandSleep = 2000 + rand:uniform(8000),
-            timer:sleep(RandSleep),
-            get_valid_id(UdpSocket, [Id | TriedIds]);
-          false ->
-            list_to_binary(Id)
-        end
-      catch
-        error:{failed_name_request, Reason} ->
-          io:format("Failed sending name request: ~p~n", [Reason]),
-          erlang:halt(1)
+    {udp, _Socket, _Ip, _Port, Res} ->
+      Msg = binary_to_list(Res),
+      Tokens = string:tokens(Msg, " \n"),
+      case Tokens of
+        ["INVALID_NAME", ReqId] ->
+          if ReqId =:= Id ->
+               true;
+             true ->
+               End = erlang:monotonic_time(millisecond) - Start,
+               Remaining = Timeout - End,
+               invalid_name(UdpSocket, Id, Remaining)
+          end;
+        _ ->
+          End = erlang:monotonic_time(millisecond) - Start,
+          Remaining = Timeout - End,
+          invalid_name(UdpSocket, Id, Remaining)
       end
+  after Timeout ->
+    false
   end.
 
 send_name_request(UdpSocket, Id) ->
-  Msg = <<"NAME_REQUEST ", (list_to_binary(Id))/binary, "\n">>,
+  Msg = list_to_binary("NAME_REQUEST " ++ Id),
   case gen_udp:send(UdpSocket, {255, 255, 255, 255}, ?UDP_PORT, Msg) of
     ok ->
       ok;
     {error, Reason} ->
-      error({failed_name_request, Reason})
+      error({name_request_failed, Reason})
   end.
 
-wait_invalid_name(Socket, Id) ->
-  receive
-    {udp, Socket, _Ip, _Port, Msg} ->
-      MsgStr = binary_to_list(Msg),
-      case string:tokens(MsgStr, " \n") of
-        ["INVALID_NAME", OtherId] when OtherId =:= Id ->
-          true;
-        _ ->
-          wait_invalid_name(Socket, Id)
-      end
-  after 10000 ->
-    false
+get_id(UdpSocket, InvalidIds) ->
+  Id = utils:get_random_id(),
+  case lists:member(Id, InvalidIds) of
+    true ->
+      get_id(UdpSocket, InvalidIds);
+    false ->
+      Id
   end.
 
-send_hello(Socket, Id, Port) ->
-  receive
-    stop ->
-      io:format("Deteniendo envío de HELLO~n"),
-      exit(normal)
-  after 0 ->
-    Mesg = <<"HELLO ", Id/binary, " ", (integer_to_binary(Port))/binary, "\n">>,
-    gen_udp:send(Socket, {255, 255, 255, 255}, ?UDP_PORT, Mesg),
-    timer:sleep(15000 + rand:uniform(5000)),
-    send_hello(Socket, Id, Port)
+join_network(UdpSocket, InvalidIds) ->
+  Id = get_id(UdpSocket, InvalidIds),
+  send_name_request(UdpSocket, Id),
+  case invalid_name(UdpSocket, Id, ?TIMEOUT_INVALID_NAME) of
+    true ->
+      WaitTime = 2000 + rand:uniform(8000),
+      receive after WaitTime ->
+        join_network(UdpSocket, [Id | InvalidIds])
+      end;
+    false ->
+      io:format("ID: ~p~n", [Id]),
+      {Id, InvalidIds}
   end.
 
-loop(Socket, MyId, MyRequestedIds, KnownNodes) ->
+loop(UdpSocket, Id, InvalidIds) ->
   receive
     stop ->
-      io:format("Cerrando la CLI...~n"),
-      gen_udp:close(Socket),
+      io:format("Bye~n"),
+      gen_udp:close(UdpSocket),
       exit(normal);
-    {udp, _Socket, Ip, _Port, Msg} ->
-      MsgStr = binary_to_list(Msg),
-      case string:tokens(MsgStr, " \n") of
-        ["HELLO", NodeId, PortStr] ->
-          case NodeId =:= binary_to_list(MyId) of
-            true ->
-              loop(Socket, MyId, MyRequestedIds, KnownNodes);
-            false ->
-              Port = list_to_integer(PortStr),
-              CurrentTime = os:system_time(second),
-              NodeInfo =
-                #{<<"ip">> => list_to_binary(inet:ntoa(Ip)),
-                  <<"port">> => Port,
-                  last_seen => CurrentTime},
-              ActiveNodes = maps:put(list_to_binary(NodeId), NodeInfo, KnownNodes),
-              utils:save_register(ActiveNodes),
-              io:format("Se recibió HELLO de ~s en ~p:~p~n", [NodeId, Ip, Port]),
-              loop(Socket, MyId, MyRequestedIds, ActiveNodes)
+    {udp, _Socket, Ip, _Port, Req} ->
+      Msg = binary_to_list(Req),
+      Tokens = string:tokens(Msg, " \n"),
+      case Tokens of
+        ["HELLO", NodeId, NodePort] ->
+          if NodeId =:= Id ->
+               loop(UdpSocket, Id, InvalidIds);
+             true ->
+               Node =
+                 #{list_to_binary("port") => NodePort,
+                   list_to_binary("ip") => list_to_binary(inet:ntoa(Ip)),
+                   list_to_binary("last_seen") => erlang:monotonic_time(seconds)},
+               ActiveNodes = maps:put(list_to_binary(NodeId), Node, utils:load_register()),
+               utils:save_register(ActiveNodes),
+               loop(UdpSocket, Id, InvalidIds)
           end;
         ["NAME_REQUEST", ReqId] ->
-          case ReqId =:= binary_to_list(MyId) orelse lists:member(ReqId, MyRequestedIds) of
+          case ReqId =:= Id orelse lists:member(ReqId, InvalidIds) of
             true ->
-              InvalidMsg = <<"INVALID_NAME ", (list_to_binary(ReqId))/binary, "\n">>,
-              gen_udp:send(Socket, Ip, ?UDP_PORT, InvalidMsg),
-              io:format("Enviado INVALID_NAME a ~p por ID repetido: ~s~n", [Ip, ReqId]),
-              loop(Socket, MyId, MyRequestedIds, KnownNodes);
+              InvalidMsg = list_to_binary("INVALID_NAME " ++ ReqId ++ "\n"),
+              case gen_udp:send(UdpSocket, Ip, ?UDP_PORT, InvalidMsg) of
+                ok ->
+                  loop(UdpSocket, Id, InvalidIds);
+                {error, Reason} ->
+                  error({udp_send_failed, Reason})
+              end;
             false ->
-              io:format("NAME_REQUEST recibido de ~p con ID ~s~n", [Ip, ReqId]),
-              loop(Socket, MyId, MyRequestedIds, KnownNodes)
+              loop(UdpSocket, Id, InvalidIds)
           end;
-        _Other ->
-          io:format("Mensaje no reconocido: ~s~n", [MsgStr]),
-          loop(Socket, MyId, MyRequestedIds, KnownNodes)
+        _ ->
+          ok
       end
-  after 5000 ->
-    ActiveNodes = remove_inactive_nodes(KnownNodes, 45),
-    loop(Socket, MyId, MyRequestedIds, ActiveNodes)
   end.
 
-shared_files() ->
-  case file:list_dir("../compartida") of
-    {ok, Filenames} ->
-      io:fwrite("Archivos compartidos: ~p ~n", [Filenames]),
-      Filenames;
-    {error, Reason} ->
-      io:fwrite("Error al leer carpeta compartida: ~p ~n", [Reason]),
-      []
+hello(UdpSocket, Id) ->
+  receive
+    stop ->
+      io:format("Stopping HELLO messages~n"),
+      exit(normal)
+  after 0 ->
+    Msg = list_to_binary("HELLO " ++ Id ++ " " ++ integer_to_list(?TCP_PORT) ++ "\n"),
+    case gen_udp:send(UdpSocket, {255, 255, 255, 255}, ?UDP_PORT, Msg) of
+      ok ->
+        timer:sleep(15000 + rand:uniform(5000)),
+        hello(UdpSocket, Id);
+      {error, Reason} ->
+        error({udp_send_failed, Reason})
+    end
   end.
 
-remove_inactive_nodes(Nodes, Timeout) ->
-  CurrentTime = os:system_time(second),
-  maps:filter(fun(_NodeId, #{last_seen := LastSeen}) -> CurrentTime - LastSeen =< Timeout
-              end,
-              Nodes).
-
-% Funciones para enviar archivos
-big_file(ClientSocket, FD, ChunkIndex) ->
-  case file:read(FD, ?DEFAULT_CHUNK_SIZE) of
-    eof ->
-      ok;
-    {ok, FileContent} ->
-      ContentSize = byte_size(FileContent),
-      Payload =
-        if ContentSize == ?DEFAULT_CHUNK_SIZE ->
-             <<?STATUS_CHUNK:8/integer-unsigned-big,
-               ChunkIndex:16/integer-unsigned-big,
-               ?DEFAULT_CHUNK_SIZE:32/integer-unsigned-big,
-               FileContent:?DEFAULT_CHUNK_SIZE/binary>>;
-           true ->
-             <<?STATUS_CHUNK:8/integer-unsigned-big,
-               ChunkIndex:16/integer-unsigned-big,
-               ContentSize:32/integer-unsigned-big,
-               FileContent:ContentSize/binary>>
-        end,
-      gen_tcp:send(ClientSocket, Payload),
-      big_file(ClientSocket, FD, ChunkIndex + 1);
-    {error, Reason} ->
-      error({read_failed, Reason})
+remove_inactive_nodes() ->
+  receive after 5000 ->
+    Nodes = utils:load_register(),
+    CurrentTime = erlang:monotonic_time(seconds),
+    Update =
+      maps:filter(fun(_, #{<<"last_seen">> := LastSeen}) -> CurrentTime - LastSeen =< 45 end,
+                  Nodes),
+    io:format("UPDATE: ~p~n", [Update]),
+    utils:save_register(Update),
+    remove_inactive_nodes()
   end.
 
-small_file(ClientSocket, FD, FileSize) ->
-  case file:read(FD, FileSize) of
-    eof ->
-      ok;
-    {ok, FileContent} ->
-      Payload =
-        <<?STATUS_OK:8/integer-unsigned-big,
-          FileSize:32/integer-unsigned-big,
-          FileContent/binary>>,
-      gen_tcp:send(ClientSocket, Payload);
+run() ->
+  case gen_udp:open(?UDP_PORT,
+                    % Incoming UDP packets are delivered as binaries (<<>>) instead of lists.
+                    [binary,
+                     % The socket is in passive mode, gen_udp:recv/2 must be called to receive data.
+                     {active, true},
+                     % Allows multiple processes to bind to the same port.
+                     {reuseaddr, true},
+                     %         Enables the socket to send or receive broadcast packets.
+                     {broadcast, true},
+                     % Binds the socket to all local network interfaces.
+                     {ip, {0, 0, 0, 0}}])
+  of
+    {ok, UdpSocket} ->
+      io:format("Joining network...~n"),
+      {Id, InvalidIds} = join_network(UdpSocket, []),
+      register(node, self()),
+      register(hello_sender, spawn(?MODULE, hello, [UdpSocket, Id])),
+      register(daemon, spawn(?MODULE, remove_inactive_nodes, [])),
+      loop(UdpSocket, Id, InvalidIds);
     {error, Reason} ->
-      error({read_failed, Reason})
-  end.
-
-send_file(ClientSocket, {FilePath, FileSize}) ->
-  case file:open(FilePath, [read, binary]) of
-    {ok, FD} ->
-      try
-        if FileSize =< ?FOUR_MB ->
-             small_file(ClientSocket, FD, FileSize);
-           true ->
-             Payload =
-               <<?STATUS_OK:8/integer-unsigned-big,
-                 FileSize:32/integer-unsigned-big,
-                 ?DEFAULT_CHUNK_SIZE:32/integer-unsigned-big>>,
-             gen_tcp:send(ClientSocket, Payload),
-             big_file(ClientSocket, FD, 0)
-        end
-      after
-        file:close(FD),
-        io:format("Cerrando socket después de enviar archivo~n"),
-        gen_tcp:close(ClientSocket)
-      end;
-    {error, Reason} ->
-      io:format("Error al abrir archivo: ~p~n", [Reason]),
-      error({open_failed, Reason})
-  end.
-
-send_error_response(ClientSocket, StatusCode) ->
-  gen_tcp:send(ClientSocket, <<StatusCode:8/big-unsigned-integer>>).
-
-find_file(FileName) ->
-  FilePath = filename:join("../compartida", FileName),
-  io:format("Buscando archivo en: ~s~n", [FilePath]),
-  case file:read_file_info(FilePath) of
-    {ok, FileInfo} ->
-      {FilePath, FileInfo#file_info.size};
-    {error, Reason} ->
-      io:format("Error al buscar archivo: ~s, motivo: ~p~n", [FileName, Reason]),
-      error({file_not_found, Reason})
-  end.
-
-% Funciones para recibir archivos
-receive_file(Socket, FileName) ->
-  io:format("Recibiendo archivo: ~s~n", [FileName]),
-  case gen_tcp:recv(Socket, 5, 10000) of
-    {ok, <<?STATUS_OK:8, FileSize:32/big-unsigned-integer>>} ->
-      io:format("Archivo encontrado. Tamaño: ~p bytes~n", [FileSize]),
-      if FileSize =< ?FOUR_MB ->
-           receive_small_file(Socket, FileName, FileSize);
-         true ->
-           case gen_tcp:recv(Socket, 4, 10000) of
-             {ok, <<ChunkSize:32/big-unsigned-integer>>} ->
-               io:format("Recibiendo archivo grande con chunks de ~p bytes~n", [ChunkSize]),
-               receive_big_file(Socket, FileName, FileSize, ChunkSize);
-             {error, Reason} ->
-               io:format("Error al recibir tamaño de chunk: ~p~n", [Reason])
-           end
-      end;
-    {ok, <<StatusCode:8>>} ->
-      handle_file_error(StatusCode);
-    {error, Reason} ->
-      io:format("Error al recibir respuesta: ~p~n", [Reason])
-  end.
-
-receive_small_file(Socket, FileName, FileSize) ->
-  case gen_tcp:recv(Socket, FileSize, 10000) of
-    {ok, FileContent} ->
-      FilePath = filename:join("../descargas", FileName),
-      case file:write_file(FilePath, FileContent) of
-        ok ->
-          io:format("Archivo ~s descargado exitosamente (~p bytes)~n", [FileName, FileSize]);
-        {error, Reason} ->
-          io:format("Error al guardar archivo: ~p~n", [Reason])
-      end;
-    {error, Reason} ->
-      io:format("Error al recibir contenido del archivo: ~p~n", [Reason])
-  end.
-
-receive_big_file(Socket, FileName, TotalSize, ChunkSize) ->
-  FilePath = filename:join("../descargas", FileName),
-  case file:open(FilePath, [write, binary]) of
-    {ok, FD} ->
-      try
-        receive_chunks(Socket, FD, 0, TotalSize, ChunkSize),
-        io:format("Archivo ~s descargado exitosamente (~p bytes)~n", [FileName, TotalSize])
-      after
-        file:close(FD)
-      end;
-    {error, Reason} ->
-      io:format("Error al crear archivo: ~p~n", [Reason])
-  end.
-
-receive_chunks(Socket, FD, ReceivedBytes, TotalSize, _ChunkSize)
-  when ReceivedBytes < TotalSize ->
-  case gen_tcp:recv(Socket, 7, 10000) of
-    {ok,
-     <<?STATUS_CHUNK:8,
-       ChunkIndex:16/big-unsigned-integer,
-       ActualChunkSize:32/big-unsigned-integer>>} ->
-      io:format("Recibiendo chunk ~p de ~p bytes~n", [ChunkIndex, ActualChunkSize]),
-      case gen_tcp:recv(Socket, ActualChunkSize, 10000) of
-        {ok, ChunkData} ->
-          case file:write(FD, ChunkData) of
-            ok ->
-              NewReceivedBytes = ReceivedBytes + ActualChunkSize,
-              io:format("Progreso: ~p/~p bytes (~.1f%)~n",
-                        [NewReceivedBytes, TotalSize, NewReceivedBytes / TotalSize * 100]),
-              receive_chunks(Socket, FD, NewReceivedBytes, TotalSize, ActualChunkSize);
-            {error, Reason} ->
-              io:format("Error al escribir chunk: ~p~n", [Reason])
-          end;
-        {error, Reason} ->
-          io:format("Error al recibir datos del chunk: ~p~n", [Reason])
-      end;
-    {error, Reason} ->
-      io:format("Error al recibir header del chunk: ~p~n", [Reason])
-  end;
-receive_chunks(_Socket, _FD, ReceivedBytes, TotalSize, _ChunkSize) ->
-  io:format("Descarga completa: ~p bytes de ~p bytes~n", [ReceivedBytes, TotalSize]).
-
-handle_file_error(StatusCode) ->
-  case StatusCode of
-    ?STATUS_FILE_NOT_FOUND ->
-      io:format("Error: Archivo no encontrado~n");
-    ?STATUS_OPEN_FAILED ->
-      io:format("Error: No se pudo abrir el archivo~n");
-    ?STATUS_READ_FAILED ->
-      io:format("Error: Error al leer el archivo~n");
-    ?STATUS_BAD_REQUEST ->
-      io:format("Error: Solicitud inválida~n");
-    _ ->
-      io:format("Error desconocido: ~p~n", [StatusCode])
+      error({udp_open_failed, Reason})
   end.
