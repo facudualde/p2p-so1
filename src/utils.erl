@@ -1,9 +1,14 @@
 -module(utils).
 
--export([get_random_id/0, load_register/0, save_register/1, update_register/3]).
+-export([get_random_id/0, load_register/0, save_register/1, update_register/3,
+         get_my_ip/0]).
 
 -define(ALLOWED_CHARS, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789").
 -define(NODES_REGISTER_PATH, "nodes_register.json").
+
+get_my_ip() ->
+  {ok, [{MyIp, _, _} | _]} = inet:getif(),
+  MyIp.
 
 get_random_id() ->
   lists:foldl(fun(_, Acc) ->
