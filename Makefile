@@ -1,16 +1,17 @@
 build:
 	touch nodes_register.json && echo "{}" > nodes_register.json
 	rebar3 compile
-	erlc -o src src/*.erl 
+	mkdir build
+	erlc -o build src/*.erl 
 
 run:
 	erl -noshell \
-  -pa src \
+  -pa build \
   -pa _build/default/lib/jsx/ebin \
   -s node run -s init stop
 
 clean:
-	rm src/*.beam
+	rm -rf build
 	rm -rf _build
 	rm nodes_register.json
 

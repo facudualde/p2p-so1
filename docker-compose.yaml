@@ -12,6 +12,8 @@ services:
     networks:
       - asgard
     command: sleep infinity
+    volumes:
+      - ./src:/home/thor/p2p-so1/src:ro
 
   loki:
     build:
@@ -24,6 +26,8 @@ services:
     networks:
       - asgard
     command: sleep infinity
+    volumes:
+      - ./src:/home/loki/p2p-so1/src:ro
 
   odin:
     build:
@@ -36,6 +40,8 @@ services:
     networks:
       - asgard
     command: sleep infinity
+    volumes:
+      - ./src:/home/odin/p2p-so1/src:ro
 
 networks:
   asgard:
