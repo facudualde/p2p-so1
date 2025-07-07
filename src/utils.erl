@@ -1,7 +1,7 @@
 -module(utils).
 
 -export([get_random_id/0, load_register/0, save_register/1, update_register/3,
-         get_my_ip/0]).
+         get_my_ip/0, reset_register/0]).
 
 -define(ALLOWED_CHARS, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789").
 -define(NODES_REGISTER_PATH, "nodes_register.json").
@@ -34,3 +34,6 @@ update_register(Id, Ip, Port) ->
   Nodes = load_register(),
   Update = maps:put(Id, #{ip => list_to_binary(Ip), port => Port}, Nodes),
   save_register(Update).
+
+reset_register() ->
+  file:write_file(?NODES_REGISTER_PATH, "{}").

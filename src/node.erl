@@ -1,7 +1,7 @@
 -module(node).
 
 -export([run/0, invalid_name/3, get_id/2, send_name_request/2, join_network/2, hello/2,
-         remove_inactive_nodes/0]).
+         remove_inactive_nodes/0, cli/1]).
 
 -define(UDP_PORT, 12346).
 -define(TCP_PORT, 12345).
@@ -82,19 +82,34 @@ join_network(UdpSocket, InvalidIds) ->
       {Id, InvalidIds}
   end.
 
-loop(UdpSocket, Id, InvalidIds) ->
+wait([]) ->
+  ok;
+wait(Refs) ->
+  receive
+    {'DOWN', Ref, process, _Pid, _Reason} ->
+      wait(lists:delete(Ref, Refs))
+  end.
+
+clean(UdpSocket, Refs) ->
+  hello_sender ! stop,
+  daemon ! stop,
+  gen_udp:close(UdpSocket),
+  wait(Refs),
+  utils:reset_register(),
+  ok.
+
+loop(UdpSocket, Id, InvalidIds, Refs) ->
   receive
     stop ->
-      io:format("Bye~n"),
-      gen_udp:close(UdpSocket),
-      exit(normal);
+      clean(UdpSocket, Refs),
+      init:stop();
     {udp, _Socket, Ip, _Port, Req} ->
       Msg = binary_to_list(Req),
       Tokens = string:tokens(Msg, " \n"),
       case Tokens of
         ["HELLO", NodeId, NodePort] ->
           if NodeId =:= Id ->
-               loop(UdpSocket, Id, InvalidIds);
+               loop(UdpSocket, Id, InvalidIds, Refs);
              true ->
                Node =
                  #{list_to_binary("port") => NodePort,
@@ -102,7 +117,7 @@ loop(UdpSocket, Id, InvalidIds) ->
                    list_to_binary("last_seen") => erlang:monotonic_time(seconds)},
                ActiveNodes = maps:put(list_to_binary(NodeId), Node, utils:load_register()),
                utils:save_register(ActiveNodes),
-               loop(UdpSocket, Id, InvalidIds)
+               loop(UdpSocket, Id, InvalidIds, Refs)
           end;
         ["NAME_REQUEST", ReqId] ->
           case ReqId =:= Id orelse lists:member(ReqId, InvalidIds) of
@@ -110,44 +125,80 @@ loop(UdpSocket, Id, InvalidIds) ->
               InvalidMsg = list_to_binary("INVALID_NAME " ++ ReqId ++ "\n"),
               case gen_udp:send(UdpSocket, Ip, ?UDP_PORT, InvalidMsg) of
                 ok ->
-                  loop(UdpSocket, Id, InvalidIds);
+                  loop(UdpSocket, Id, InvalidIds, Refs);
                 {error, Reason} ->
                   error({udp_send_failed, Reason})
               end;
             false ->
-              loop(UdpSocket, Id, InvalidIds)
+              loop(UdpSocket, Id, InvalidIds, Refs)
           end;
         _ ->
           ok
       end
   end.
 
+send_hello(UdpSocket, Id) ->
+  Msg = list_to_binary("HELLO " ++ Id ++ " " ++ integer_to_list(?TCP_PORT) ++ "\n"),
+  case gen_udp:send(UdpSocket, {255, 255, 255, 255}, ?UDP_PORT, Msg) of
+    ok ->
+      ok;
+    {error, Reason} ->
+      error({udp_send_failed, Reason})
+  end.
+
 hello(UdpSocket, Id) ->
+  Ref = erlang:send_after(15000 + rand:uniform(5000), self(), continue),
   receive
     stop ->
-      io:format("Stopping HELLO messages~n"),
-      exit(normal)
-  after 0 ->
-    Msg = list_to_binary("HELLO " ++ Id ++ " " ++ integer_to_list(?TCP_PORT) ++ "\n"),
-    case gen_udp:send(UdpSocket, {255, 255, 255, 255}, ?UDP_PORT, Msg) of
-      ok ->
-        timer:sleep(15000 + rand:uniform(5000)),
-        hello(UdpSocket, Id);
-      {error, Reason} ->
-        error({udp_send_failed, Reason})
-    end
+      erlang:cancel_timer(Ref),
+      ok;
+    continue ->
+      Msg = list_to_binary("HELLO " ++ Id ++ " " ++ integer_to_list(?TCP_PORT) ++ "\n"),
+      case gen_udp:send(UdpSocket, {255, 255, 255, 255}, ?UDP_PORT, Msg) of
+        ok ->
+          send_hello(UdpSocket, Id),
+          hello(UdpSocket, Id);
+        {error, Reason} ->
+          error({udp_send_failed, Reason})
+      end
   end.
 
 remove_inactive_nodes() ->
-  receive after 5000 ->
-    Nodes = utils:load_register(),
-    CurrentTime = erlang:monotonic_time(seconds),
-    Update =
-      maps:filter(fun(_, #{<<"last_seen">> := LastSeen}) -> CurrentTime - LastSeen =< 45 end,
-                  Nodes),
-    io:format("UPDATE: ~p~n", [Update]),
-    utils:save_register(Update),
-    remove_inactive_nodes()
+  Ref = erlang:send_after(5000, self(), update),
+  receive
+    stop ->
+      erlang:cancel_timer(Ref),
+      ok;
+    update ->
+      Nodes = utils:load_register(),
+      CurrentTime = erlang:monotonic_time(seconds),
+      Update =
+        maps:filter(fun(_, #{<<"last_seen">> := LastSeen}) -> CurrentTime - LastSeen =< 45 end,
+                    Nodes),
+      utils:save_register(Update),
+      remove_inactive_nodes()
+  end.
+
+cli(Id) ->
+  io:format("~nAvailable commands:~n"),
+  io:format("1: show node id~n"),
+  io:format("2: list shared files~n"),
+  io:format("3: list downloaded files"),
+  io:format("4: search files in the network~n"),
+  io:format("5: download file from the network~n"),
+  io:format("6: exit~n"),
+  case string:trim(
+         io:get_line("input: "))
+  of
+    "1" ->
+      io:format("Your id: ~s~n", [Id]),
+      cli(Id);
+    "5" ->
+      io:format("Bye~n"),
+      loop ! stop;
+    _ ->
+      io:format("Syntax error, type one of the command numbers above.~n"),
+      cli(Id)
   end.
 
 run() ->
@@ -166,10 +217,14 @@ run() ->
     {ok, UdpSocket} ->
       io:format("Joining network...~n"),
       {Id, InvalidIds} = join_network(UdpSocket, []),
-      register(node, self()),
-      register(hello_sender, spawn(?MODULE, hello, [UdpSocket, Id])),
-      register(daemon, spawn(?MODULE, remove_inactive_nodes, [])),
-      loop(UdpSocket, Id, InvalidIds);
+      send_hello(UdpSocket, Id),
+      {HelloPid, HelloRef} = spawn_monitor(?MODULE, hello, [UdpSocket, Id]),
+      register(hello_sender, HelloPid),
+      {DaemonPid, DaemonRef} = spawn_monitor(?MODULE, remove_inactive_nodes, []),
+      register(daemon, DaemonPid),
+      spawn_monitor(?MODULE, cli, [Id]),
+      register(loop, self()),
+      loop(UdpSocket, Id, InvalidIds, [HelloRef, DaemonRef]);
     {error, Reason} ->
       error({udp_open_failed, Reason})
   end.
