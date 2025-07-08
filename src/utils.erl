@@ -1,7 +1,7 @@
 -module(utils).
 
 -export([get_random_id/0, load_register/0, save_register/1, update_register/3,
-         get_my_ip/0, reset_register/0]).
+         get_my_ip/0, reset_register/0, show_register/0]).
 
 -define(ALLOWED_CHARS, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789").
 -define(NODES_REGISTER_PATH, "nodes_register.json").
@@ -37,3 +37,22 @@ update_register(Id, Ip, Port) ->
 
 reset_register() ->
   file:write_file(?NODES_REGISTER_PATH, "{}").
+
+show_register() ->
+  Nodes = load_register(),
+  io:format("~n"),
+  case maps:size(Nodes) of
+    0 ->
+      io:format("Empty register~n");
+    _ ->
+      maps:fold(fun(Key, Value, _) ->
+                   io:format("~n"),
+                   {ok, Ip} = maps:find(<<"ip">>, Value),
+                   {ok, Port} = maps:find(<<"port">>, Value),
+                   io:format("Node id: ~p~n", [binary_to_list(Key)]),
+                   io:format("ip: ~p~n", [binary_to_list(Ip)]),
+                   io:format("port: ~p~n", [Port])
+                end,
+                ok,
+                Nodes)
+  end.

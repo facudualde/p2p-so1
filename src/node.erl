@@ -78,7 +78,6 @@ join_network(UdpSocket, InvalidIds) ->
         join_network(UdpSocket, [Id | InvalidIds])
       end;
     false ->
-      io:format("ID: ~p~n", [Id]),
       {Id, InvalidIds}
   end.
 
@@ -181,17 +180,21 @@ remove_inactive_nodes() ->
 
 cli(Id) ->
   io:format("~nAvailable commands:~n"),
-  io:format("1: show node id~n"),
-  io:format("2: list shared files~n"),
-  io:format("3: list downloaded files"),
-  io:format("4: search files in the network~n"),
-  io:format("5: download file from the network~n"),
-  io:format("6: exit~n"),
+  io:format("1: node id~n"),
+  io:format("2: list known nodes in the network~n"),
+  io:format("3: list shared files~n"),
+  io:format("4: list downloaded files~n"),
+  io:format("5: search files in the network~n"),
+  io:format("6: download file from the network~n"),
+  io:format("7: exit~n"),
   case string:trim(
          io:get_line("input: "))
   of
     "1" ->
-      io:format("Your id: ~s~n", [Id]),
+      io:format("~nYour id: ~s~n", [Id]),
+      cli(Id);
+    "2" ->
+      utils:show_register(),
       cli(Id);
     "5" ->
       io:format("Bye~n"),
