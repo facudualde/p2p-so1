@@ -15,8 +15,6 @@
 % -define(STATUS_BAD_REQUEST, 115).
 -define(TIMEOUT_INVALID_NAME, 10000).
 
-% -include_lib("kernel/include/file.hrl").
-
 invalid_name(UdpSocket, Id, Timeout) ->
   Start = erlang:monotonic_time(millisecond),
   receive
@@ -195,6 +193,9 @@ cli(Id) ->
       cli(Id);
     "2" ->
       utils:show_register(),
+      cli(Id);
+    "3" ->
+      utils:shared_files(),
       cli(Id);
     "5" ->
       io:format("Bye~n"),
