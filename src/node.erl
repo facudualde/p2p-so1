@@ -197,8 +197,11 @@ cli(Id) ->
     "3" ->
       utils:shared_files(),
       cli(Id);
+    "4" ->
+      utils:downloaded_files(),
+      cli(Id);
     "5" ->
-      io:format("Bye~n"),
+      io:format("~nBye~n"),
       loop ! stop;
     _ ->
       io:format("Syntax error, type one of the command numbers above.~n"),

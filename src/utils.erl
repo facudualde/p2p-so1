@@ -1,11 +1,12 @@
 -module(utils).
 
 -export([get_random_id/0, load_register/0, save_register/1, update_register/3,
-         get_my_ip/0, reset_register/0, show_register/0, shared_files/0]).
+         get_my_ip/0, reset_register/0, show_register/0, shared_files/0, downloaded_files/0]).
 
 -define(ALLOWED_CHARS, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789").
 -define(NODES_REGISTER_PATH, "nodes_register.json").
 -define(SHARED_PATH, "shared/").
+-define(DOWNLOADS_PATH, "downloads/").
 
 -include_lib("kernel/include/file.hrl").
 
@@ -64,9 +65,28 @@ shared_files() ->
   io:format("~n"),
   case file:list_dir(?SHARED_PATH) of
     {ok, List} ->
-      lists:foreach(fun(File) ->
-                       {ok, Info} = file:read_file_info(?SHARED_PATH ++ "/" ++ File),
-                       io:format("~p -> size(bytes): ~p~n", [File, Info#file_info.size])
-                    end,
-                    List)
+      if length(List) =:= 0 ->
+           io:format("Empty directory~n");
+         true ->
+           lists:foreach(fun(File) ->
+                            {ok, Info} = file:read_file_info(?SHARED_PATH ++ "/" ++ File),
+                            io:format("~p -> size(bytes): ~p~n", [File, Info#file_info.size])
+                         end,
+                         List)
+      end
+  end.
+
+downloaded_files() ->
+  io:format("~n"),
+  case file:list_dir(?DOWNLOADS_PATH) of
+    {ok, List} ->
+      if length(List) =:= 0 ->
+           io:format("Empty directory~n");
+         true ->
+           lists:foreach(fun(File) ->
+                            {ok, Info} = file:read_file_info(?DOWNLOADS_PATH ++ "/" ++ File),
+                            io:format("~p -> size(bytes): ~p~n", [File, Info#file_info.size])
+                         end,
+                         List)
+      end
   end.
