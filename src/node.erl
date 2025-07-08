@@ -88,10 +88,10 @@ wait(Refs) ->
   end.
 
 clean(UdpSocket, Refs) ->
-  hello_sender ! stop,
-  daemon ! stop,
-  gen_udp:close(UdpSocket),
+  hello ! stop,
+  remove_inactive_nodes ! stop,
   wait(Refs),
+  gen_udp:close(UdpSocket),
   utils:reset_register(),
   ok.
 
@@ -200,11 +200,12 @@ cli(Id) ->
     "4" ->
       utils:downloaded_files(),
       cli(Id);
-    "5" ->
+    "7" ->
       io:format("~nBye~n"),
-      loop ! stop;
+      loop ! stop,
+      ok;
     _ ->
-      io:format("Syntax error, type one of the command numbers above.~n"),
+      io:format("~nSyntax error, type one of the command numbers above.~n"),
       cli(Id)
   end.
 
@@ -223,15 +224,22 @@ run() ->
   of
     {ok, UdpSocket} ->
       io:format("Joining network...~n"),
+
       {Id, InvalidIds} = join_network(UdpSocket, []),
+
       send_hello(UdpSocket, Id),
       {HelloPid, HelloRef} = spawn_monitor(?MODULE, hello, [UdpSocket, Id]),
-      register(hello_sender, HelloPid),
-      {DaemonPid, DaemonRef} = spawn_monitor(?MODULE, remove_inactive_nodes, []),
-      register(daemon, DaemonPid),
-      spawn_monitor(?MODULE, cli, [Id]),
+      register(hello, HelloPid),
+
+      {RemoveInactiveNodesPid, RemoveInactiveNodesRef} =
+        spawn_monitor(?MODULE, remove_inactive_nodes, []),
+      register(remove_inactive_nodes, RemoveInactiveNodesPid),
+
+      {CliPid, CliRef} = spawn_monitor(?MODULE, cli, [Id]),
+      register(cli, CliPid),
+
       register(loop, self()),
-      loop(UdpSocket, Id, InvalidIds, [HelloRef, DaemonRef]);
+      loop(UdpSocket, Id, InvalidIds, [HelloRef, RemoveInactiveNodesRef, CliRef]);
     {error, Reason} ->
       error({udp_open_failed, Reason})
   end.

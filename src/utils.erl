@@ -44,10 +44,9 @@ reset_register() ->
 
 show_register() ->
   Nodes = load_register(),
-  io:format("~n"),
   case maps:size(Nodes) of
     0 ->
-      io:format("Empty register~n");
+      io:format("~nEmpty register~n");
     _ ->
       maps:fold(fun(Key, Value, _) ->
                    io:format("~n"),
