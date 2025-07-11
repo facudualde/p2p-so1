@@ -1,7 +1,8 @@
 -module(node).
 
--export([run/0, invalid_name/3, get_id/2, send_name_request/2, join_network/2, hello/2,
-         remove_inactive_nodes/0, cli/1]).
+-export([print_search_response/2, send_search_request/4, handle_client/1, run/0,
+         invalid_name/3, get_id/2, send_name_request/2, join_network/2, hello/2,
+         remove_inactive_nodes/0, cli/1, create_tcp_server/0, run_tcp_server/1]).
 
 -define(UDP_PORT, 12346).
 -define(TCP_PORT, 12345).
@@ -14,6 +15,7 @@
 % -define(STATUS_READ_FAILED, 114).
 % -define(STATUS_BAD_REQUEST, 115).
 -define(TIMEOUT_INVALID_NAME, 10000).
+-define(TIMEOUT_SEARCH_RESPONSE, 3000).
 
 invalid_name(UdpSocket, Id, Timeout) ->
   Start = erlang:monotonic_time(millisecond),
@@ -135,7 +137,7 @@ loop(UdpSocket, Id, InvalidIds, Refs) ->
   end.
 
 send_hello(UdpSocket, Id) ->
-  Msg = list_to_binary("HELLO " ++ Id ++ " " ++ integer_to_list(?TCP_PORT) ++ "\n"),
+  Msg = list_to_binary("HELLO " ++ Id ++ " " ++ integer_to_list(?UDP_PORT) ++ "\n"),
   case gen_udp:send(UdpSocket, {255, 255, 255, 255}, ?UDP_PORT, Msg) of
     ok ->
       ok;
@@ -150,7 +152,7 @@ hello(UdpSocket, Id) ->
       erlang:cancel_timer(Ref),
       ok;
     continue ->
-      Msg = list_to_binary("HELLO " ++ Id ++ " " ++ integer_to_list(?TCP_PORT) ++ "\n"),
+      Msg = list_to_binary("HELLO " ++ Id ++ " " ++ integer_to_list(?UDP_PORT) ++ "\n"),
       case gen_udp:send(UdpSocket, {255, 255, 255, 255}, ?UDP_PORT, Msg) of
         ok ->
           send_hello(UdpSocket, Id),
@@ -176,6 +178,81 @@ remove_inactive_nodes() ->
       remove_inactive_nodes()
   end.
 
+print(State) ->
+  maps:foreach(fun(NodeId, Msgs) ->
+                  io:format("~nNode id: ~p~n", [binary_to_list(NodeId)]),
+                  lists:foreach(fun(Msg) ->
+                                   Lines = string:tokens(Msg, "\n"),
+                                   lists:foreach(fun(Line) ->
+                                                    case string:tokens(Line, " ") of
+                                                      ["SEARCH_RESPONSE",
+                                                       _NodeId,
+                                                       FileName,
+                                                       FileSize] ->
+                                                        io:format("~p - ~p bytes~n",
+                                                                  [FileName,
+                                                                   list_to_integer(FileSize)]);
+                                                      _ -> io:format("Bad answer~n")
+                                                    end
+                                                 end,
+                                                 Lines)
+                                end,
+                                Msgs)
+               end,
+               State).
+
+print_search_response(State, NodeIds) ->
+  receive
+    {NodeId, done} ->
+      Pending = lists:delete(NodeId, NodeIds),
+      case Pending of
+        [] ->
+          print(State);
+        _ ->
+          print_search_response(State, Pending)
+      end;
+    {NodeId, Msg} ->
+      NewState = maps:update_with(NodeId, fun(Msgs) -> [Msg | Msgs] end, [Msg], State),
+      print_search_response(NewState, NodeIds)
+  end.
+
+collect_search_responses(ClientSocket, NodeId) ->
+  case gen_tcp:recv(ClientSocket, 0, ?TIMEOUT_SEARCH_RESPONSE) of
+    {ok, Data} ->
+      printer ! {NodeId, binary_to_list(Data)},
+      collect_search_responses(ClientSocket, NodeId);
+    {error, timeout} ->
+      printer ! {NodeId, done};
+    {error, closed} ->
+      ok
+  end.
+
+send_search_request(Id, Ip, NodeId, Pattern) ->
+  case gen_tcp:connect(binary_to_list(Ip),
+                       ?TCP_PORT,
+                       [binary, {active, false}, {reuseaddr, true}, {packet, 0}])
+  of
+    {ok, ClientSocket} ->
+      Msg = list_to_binary("SEARCH_REQUEST " ++ Id ++ " " ++ Pattern ++ "\n"),
+      gen_tcp:send(ClientSocket, Msg),
+      collect_search_responses(ClientSocket, NodeId),
+      gen_tcp:close(ClientSocket);
+    {error, Reason} ->
+      io:format("Ups: ~p~n", [Reason])
+  end.
+
+distributed_search(Id, Pattern) ->
+  io:format("Doing distributed search...~n"),
+  Nodes = utils:load_register(),
+  NodeIds = maps:keys(Nodes),
+  {PrinterPid, PrinterRef} = spawn_monitor(?MODULE, print_search_response, [#{}, NodeIds]),
+  register(printer, PrinterPid),
+  maps:foreach(fun(NodeId, #{<<"ip">> := Ip, <<"port">> := Port}) ->
+                  spawn(?MODULE, send_search_request, [Id, Ip, NodeId, Pattern])
+               end,
+               Nodes),
+  PrinterRef.
+
 cli(Id) ->
   io:format("~nAvailable commands:~n"),
   io:format("1: node id~n"),
@@ -200,6 +277,19 @@ cli(Id) ->
     "4" ->
       utils:downloaded_files(),
       cli(Id);
+    "5" ->
+      Pattern =
+        string:trim(
+          io:get_line("Pattern: ")),
+      case Pattern of
+        "" ->
+          io:format("~nBad argument~n"),
+          cli(Id);
+        _ ->
+          Ref = distributed_search(Id, Pattern),
+          wait([Ref]),
+          cli(Id)
+      end;
     "7" ->
       io:format("~nBye~n"),
       loop ! stop,
@@ -207,6 +297,60 @@ cli(Id) ->
     _ ->
       io:format("~nSyntax error, type one of the command numbers above.~n"),
       cli(Id)
+  end.
+
+handle_client(ClientSocket) ->
+  case gen_tcp:recv(ClientSocket, 0) of
+    {ok, Req} ->
+      Msg = binary_to_list(Req),
+      Tokens = string:tokens(Msg, " \n"),
+      case Tokens of
+        ["SEARCH_REQUEST", NodeId, Pattern] ->
+          case utils:search(Pattern) of
+            [] ->
+              handle_client(ClientSocket);
+            Files ->
+              lists:foreach(fun({FileName, FileSize}) ->
+                               Res =
+                                 "SEARCH_RESPONSE "
+                                 ++ NodeId
+                                 ++ " "
+                                 ++ FileName
+                                 ++ " "
+                                 ++ integer_to_list(FileSize)
+                                 ++ "\n",
+                               case gen_tcp:send(ClientSocket, list_to_binary(Res)) of
+                                 ok -> ok;
+                                 {error, Reason} -> error({tcp_send_failed, Reason})
+                               end
+                            end,
+                            Files),
+              handle_client(ClientSocket)
+          end;
+        _ ->
+          io:format("wtf?~n")
+      end;
+    {error, closed} ->
+      ok
+  end.
+
+run_tcp_server(TcpSocket) ->
+  case gen_tcp:accept(TcpSocket) of
+    {ok, ClientSocket} ->
+      spawn(?MODULE, handle_client, [ClientSocket]),
+      run_tcp_server(TcpSocket);
+    {error, Reason} ->
+      io:format("Connection with client failed: ~p~n", [Reason])
+  end.
+
+create_tcp_server() ->
+  case gen_tcp:listen(?TCP_PORT, [binary, {active, false}, {reuseaddr, true}, {packet, 0}])
+  of
+    {ok, TcpSocket} ->
+      io:format("Tcp server running~n"),
+      TcpSocket;
+    {error, Reason} ->
+      error({tcp_open_failed, Reason})
   end.
 
 run() ->
@@ -235,11 +379,15 @@ run() ->
         spawn_monitor(?MODULE, remove_inactive_nodes, []),
       register(remove_inactive_nodes, RemoveInactiveNodesPid),
 
+      TcpSocket = create_tcp_server(),
+      {TcpServerPid, TcpServerRef} = spawn_monitor(?MODULE, run_tcp_server, [TcpSocket]),
+      register(tcp_server, TcpServerPid),
+
       {CliPid, CliRef} = spawn_monitor(?MODULE, cli, [Id]),
       register(cli, CliPid),
 
       register(loop, self()),
-      loop(UdpSocket, Id, InvalidIds, [HelloRef, RemoveInactiveNodesRef, CliRef]);
+      loop(UdpSocket, Id, InvalidIds, [HelloRef, RemoveInactiveNodesRef, CliRef, TcpServerRef]);
     {error, Reason} ->
       error({udp_open_failed, Reason})
   end.

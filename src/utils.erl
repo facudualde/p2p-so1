@@ -1,6 +1,6 @@
 -module(utils).
 
--export([get_random_id/0, load_register/0, save_register/1, update_register/3,
+-export([search/1, get_random_id/0, load_register/0, save_register/1, update_register/3,
          get_my_ip/0, reset_register/0, show_register/0, shared_files/0, downloaded_files/0]).
 
 -define(ALLOWED_CHARS, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789").
@@ -89,3 +89,12 @@ downloaded_files() ->
                          List)
       end
   end.
+
+search(Pattern) ->
+  lists:map(fun(FilePath) ->
+               {ok, Info} = file:read_file_info(FilePath),
+               FileSize = Info#file_info.size,
+               FileName = filename:basename(FilePath),
+               {FileName, FileSize}
+            end,
+            filelib:wildcard(?SHARED_PATH ++ Pattern)).
