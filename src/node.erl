@@ -2,7 +2,7 @@
 
 -export([print_search_response/2, send_search_request/4, handle_client/1, run/0,
          invalid_name/3, get_id/2, send_name_request/2, join_network/2, hello/2,
-         remove_inactive_nodes/0, cli/1, create_tcp_server/0, run_tcp_server/1]).
+         remove_inactive_nodes/0, cli/1, create_tcp_server/0, run_tcp_server/2]).
 
 -define(UDP_PORT, 12346).
 -define(TCP_PORT, 12345).
@@ -89,18 +89,19 @@ wait(Refs) ->
       wait(lists:delete(Ref, Refs))
   end.
 
-clean(UdpSocket, Refs) ->
+clean(UdpSocket, TcpSocket, Refs) ->
   hello ! stop,
   remove_inactive_nodes ! stop,
+  gen_tcp:close(TcpSocket),
   wait(Refs),
   gen_udp:close(UdpSocket),
   utils:reset_register(),
   ok.
 
-loop(UdpSocket, Id, InvalidIds, Refs) ->
+loop(UdpSocket, TcpSocket, Id, InvalidIds, Refs) ->
   receive
     stop ->
-      clean(UdpSocket, Refs),
+      clean(UdpSocket, TcpSocket, Refs),
       init:stop();
     {udp, _Socket, Ip, _Port, Req} ->
       Msg = binary_to_list(Req),
@@ -108,7 +109,7 @@ loop(UdpSocket, Id, InvalidIds, Refs) ->
       case Tokens of
         ["HELLO", NodeId, NodePort] ->
           if NodeId =:= Id ->
-               loop(UdpSocket, Id, InvalidIds, Refs);
+               loop(UdpSocket, TcpSocket, Id, InvalidIds, Refs);
              true ->
                Node =
                  #{list_to_binary("port") => NodePort,
@@ -116,7 +117,7 @@ loop(UdpSocket, Id, InvalidIds, Refs) ->
                    list_to_binary("last_seen") => erlang:monotonic_time(seconds)},
                ActiveNodes = maps:put(list_to_binary(NodeId), Node, utils:load_register()),
                utils:save_register(ActiveNodes),
-               loop(UdpSocket, Id, InvalidIds, Refs)
+               loop(UdpSocket, TcpSocket, Id, InvalidIds, Refs)
           end;
         ["NAME_REQUEST", ReqId] ->
           case ReqId =:= Id orelse lists:member(ReqId, InvalidIds) of
@@ -124,12 +125,12 @@ loop(UdpSocket, Id, InvalidIds, Refs) ->
               InvalidMsg = list_to_binary("INVALID_NAME " ++ ReqId ++ "\n"),
               case gen_udp:send(UdpSocket, Ip, ?UDP_PORT, InvalidMsg) of
                 ok ->
-                  loop(UdpSocket, Id, InvalidIds, Refs);
+                  loop(UdpSocket, TcpSocket, Id, InvalidIds, Refs);
                 {error, Reason} ->
                   error({udp_send_failed, Reason})
               end;
             false ->
-              loop(UdpSocket, Id, InvalidIds, Refs)
+              loop(UdpSocket, TcpSocket, Id, InvalidIds, Refs)
           end;
         _ ->
           ok
@@ -222,8 +223,10 @@ collect_search_responses(ClientSocket, NodeId) ->
       printer ! {NodeId, binary_to_list(Data)},
       collect_search_responses(ClientSocket, NodeId);
     {error, timeout} ->
-      printer ! {NodeId, done};
+      printer ! {NodeId, done},
+      ok;
     {error, closed} ->
+      printer ! {NodeId, done},
       ok
   end.
 
@@ -291,7 +294,7 @@ cli(Id) ->
           cli(Id)
       end;
     "7" ->
-      io:format("~nBye~n"),
+      io:format("Bye~n"),
       loop ! stop,
       ok;
     _ ->
@@ -308,7 +311,7 @@ handle_client(ClientSocket) ->
         ["SEARCH_REQUEST", NodeId, Pattern] ->
           case utils:search(Pattern) of
             [] ->
-              handle_client(ClientSocket);
+              ok;
             Files ->
               lists:foreach(fun({FileName, FileSize}) ->
                                Res =
@@ -325,8 +328,10 @@ handle_client(ClientSocket) ->
                                end
                             end,
                             Files),
-              handle_client(ClientSocket)
-          end;
+              ok
+          end,
+          gen_tcp:close(ClientSocket),
+          ok;
         _ ->
           io:format("wtf?~n")
       end;
@@ -334,13 +339,14 @@ handle_client(ClientSocket) ->
       ok
   end.
 
-run_tcp_server(TcpSocket) ->
+run_tcp_server(TcpSocket, Refs) ->
   case gen_tcp:accept(TcpSocket) of
     {ok, ClientSocket} ->
-      spawn(?MODULE, handle_client, [ClientSocket]),
-      run_tcp_server(TcpSocket);
-    {error, Reason} ->
-      io:format("Connection with client failed: ~p~n", [Reason])
+      {_, ClientRef} = spawn_monitor(?MODULE, handle_client, [ClientSocket]),
+      run_tcp_server(TcpSocket, [ClientRef | Refs]);
+    {error, closed} ->
+      wait(Refs),
+      ok
   end.
 
 create_tcp_server() ->
@@ -380,14 +386,18 @@ run() ->
       register(remove_inactive_nodes, RemoveInactiveNodesPid),
 
       TcpSocket = create_tcp_server(),
-      {TcpServerPid, TcpServerRef} = spawn_monitor(?MODULE, run_tcp_server, [TcpSocket]),
+      {TcpServerPid, TcpServerRef} = spawn_monitor(?MODULE, run_tcp_server, [TcpSocket, []]),
       register(tcp_server, TcpServerPid),
 
       {CliPid, CliRef} = spawn_monitor(?MODULE, cli, [Id]),
       register(cli, CliPid),
 
       register(loop, self()),
-      loop(UdpSocket, Id, InvalidIds, [HelloRef, RemoveInactiveNodesRef, CliRef, TcpServerRef]);
+      loop(UdpSocket,
+           TcpSocket,
+           Id,
+           InvalidIds,
+           [HelloRef, RemoveInactiveNodesRef, CliRef, TcpServerRef]);
     {error, Reason} ->
       error({udp_open_failed, Reason})
   end.
