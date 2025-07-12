@@ -22,10 +22,13 @@ docker-down:
 	sudo docker-compose down
 
 docker-thor:
+	sudo docker start thor
 	sudo docker exec -it thor bash
 
 docker-loki:
+	sudo docker start loki
 	sudo docker exec -it loki bash
 
 docker-odin:
+	sudo docker start odin
 	sudo docker exec -it odin bash
