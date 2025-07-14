@@ -20,23 +20,11 @@
 invalid_name(UdpSocket, Id, Timeout) ->
   Start = erlang:monotonic_time(millisecond),
   receive
-    {udp, _Socket, Ip, _Port, Res} ->
+    {udp, _Socket, _Ip, _Port, Res} ->
       Msg = binary_to_list(Res),
       Tokens = string:tokens(Msg, " \n"),
       case Tokens of
-        ["INVALID_NAME", ReqId] ->
-          if ReqId =:= Id ->
-               true;
-             true ->
-               End = erlang:monotonic_time(millisecond) - Start,
-               Remaining = Timeout - End,
-               invalid_name(UdpSocket, Id, Remaining)
-          end;
-        ["NAME_REQUEST", ReqId] ->
-          MyIp = utils:get_my_ip(),
-          if Ip =/= MyIp andalso ReqId =:= Id ->
-               true;
-             true ->
+        ["INVALID_NAME", _ReqId] ->
                End = erlang:monotonic_time(millisecond) - Start,
                Remaining = Timeout - End,
                invalid_name(UdpSocket, Id, Remaining)
@@ -153,14 +141,8 @@ hello(UdpSocket, Id) ->
       erlang:cancel_timer(Ref),
       ok;
     continue ->
-      Msg = list_to_binary("HELLO " ++ Id ++ " " ++ integer_to_list(?UDP_PORT) ++ "\n"),
-      case gen_udp:send(UdpSocket, {255, 255, 255, 255}, ?UDP_PORT, Msg) of
-        ok ->
           send_hello(UdpSocket, Id),
           hello(UdpSocket, Id);
-        {error, Reason} ->
-          error({udp_send_failed, Reason})
-      end
   end.
 
 remove_inactive_nodes() ->
