@@ -472,7 +472,7 @@ download(FileName, NodeId, ClientSocket) ->
              {ok, ChunkSize} ->
                Path = filename:join([?DOWNLOADS_PATH, FileName]),
                {ok, FD} = file:open(Path, [write, binary]),
-               receive_big_file(FD, ChunkSize, ClientSocket)
+               receive_big_file(FD, ChunkSize, ClientSocket, 0, FileSize)
            end
       end
   end.
@@ -501,25 +501,35 @@ send_download_request(FileName, NodeId) ->
       ok
   end.
 
-receive_big_file(FD, ChunkSize, ClientSocket) ->
-  case gen_tcp:recv(ClientSocket, 7) of
+receive_big_file(FD, ChunkSize, ClientSocket, BytesReceived, TotalSize) ->
+  case gen_tcp:recv(ClientSocket, 7, 4000) of
     {ok,
      <<?STATUS_CHUNK:8,
        ChunkIndex:16/big-unsigned-integer,
        CurrentChunkSize:32/big-unsigned-integer>>} ->
-      case gen_tcp:recv(ClientSocket, CurrentChunkSize) of
+
+      case gen_tcp:recv(ClientSocket, CurrentChunkSize, 4000) of
         {ok, Content} ->
           file:write(FD, Content),
-          if CurrentChunkSize < ChunkSize ->
-               file:close(FD),
-               ok;
-             true ->
-               receive_big_file(FD, ChunkSize, ClientSocket)
+          NewTotal = BytesReceived + CurrentChunkSize,
+          io:format("Chunk ~p recibido (~p bytes), total acumulado: ~p/~p~n",
+                    [ChunkIndex, CurrentChunkSize, NewTotal, TotalSize]),
+          if
+            NewTotal >= TotalSize ->
+              file:close(FD),
+              io:format("Transferencia completa.~n"),
+              ok;
+            true ->
+              receive_big_file(FD, ChunkSize, ClientSocket, NewTotal, TotalSize)
           end
       end;
+
     {error, Reason} ->
-      io:format("HUbo error: ~p~n", [Reason])
+      io:format("Error de socket: ~p~n", [Reason]),
+      file:close(FD),
+      {error, Reason}
   end.
+
 
 receive_small_file(FileName, FileSize, ClientSocket) ->
   io:format("~nHola~n"),
