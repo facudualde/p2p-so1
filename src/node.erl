@@ -62,15 +62,21 @@ get_id(UdpSocket, InvalidIds) ->
 
 join_network(UdpSocket, InvalidIds) ->
   Id = get_id(UdpSocket, InvalidIds),
-  send_name_request(UdpSocket, Id),
-  case invalid_name(UdpSocket, Id, ?TIMEOUT_INVALID_NAME) of
-    true ->
-      WaitTime = 2000 + rand:uniform(8000),
-      receive after WaitTime ->
-        join_network(UdpSocket, [Id | InvalidIds])
-      end;
-    false ->
-      {Id, InvalidIds}
+  try
+    send_name_request(UdpSocket, Id),
+    case invalid_name(UdpSocket, Id, ?TIMEOUT_INVALID_NAME) of
+      true ->
+        WaitTime = 2000 + rand:uniform(8000),
+        receive after WaitTime ->
+          join_network(UdpSocket, [Id | InvalidIds])
+        end;
+      false ->
+        {Id, InvalidIds}
+    end
+  catch
+    error:{name_request_failed, Reason} ->
+      io:format("~nName request failed: ~p~n", [Reason]),
+      init:stop()
   end.
 
 wait([]) ->
@@ -135,7 +141,7 @@ send_hello(UdpSocket, Id) ->
     ok ->
       ok;
     {error, Reason} ->
-      error({udp_send_failed, Reason})
+      error({send_hello_failed, Reason})
   end.
 
 hello(UdpSocket, Id) ->
@@ -362,7 +368,6 @@ handle_client(ClientSocket) ->
           Path = filename:join([?SHARED_PATH, FileName]),
           {ok, Info} = file:read_file_info(Path),
           FileSize = Info#file_info.size,
-          io:format("~nchau~n"),
           if FileSize =< ?FOUR_MB ->
                send_small_file(FileName, FileSize, ClientSocket);
              true ->
@@ -377,9 +382,7 @@ handle_client(ClientSocket) ->
                  {error, Reason} ->
                    error({open_file_failed, Reason})
                end
-          end;
-        _ ->
-          io:format("wtf?~n")
+          end
       end;
     {error, closed} ->
       ok
@@ -392,7 +395,9 @@ run_tcp_server(TcpSocket, Refs) ->
       run_tcp_server(TcpSocket, [ClientRef | Refs]);
     {error, closed} ->
       wait(Refs),
-      ok
+      ok;
+    {error, Reason} ->
+      error({tcp_server_failed, Reason})
   end.
 
 create_tcp_server() ->
@@ -402,7 +407,7 @@ create_tcp_server() ->
       io:format("Tcp server running~n"),
       TcpSocket;
     {error, Reason} ->
-      error({tcp_open_failed, Reason})
+      error({tcp_listen_failed, Reason})
   end.
 
 run() ->
@@ -507,29 +512,25 @@ receive_big_file(FD, ChunkSize, ClientSocket, BytesReceived, TotalSize) ->
      <<?STATUS_CHUNK:8,
        ChunkIndex:16/big-unsigned-integer,
        CurrentChunkSize:32/big-unsigned-integer>>} ->
-
       case gen_tcp:recv(ClientSocket, CurrentChunkSize, 4000) of
         {ok, Content} ->
           file:write(FD, Content),
           NewTotal = BytesReceived + CurrentChunkSize,
           io:format("Chunk ~p recibido (~p bytes), total acumulado: ~p/~p~n",
                     [ChunkIndex, CurrentChunkSize, NewTotal, TotalSize]),
-          if
-            NewTotal >= TotalSize ->
-              file:close(FD),
-              io:format("Transferencia completa.~n"),
-              ok;
-            true ->
-              receive_big_file(FD, ChunkSize, ClientSocket, NewTotal, TotalSize)
+          if NewTotal >= TotalSize ->
+               file:close(FD),
+               io:format("Transferencia completa.~n"),
+               ok;
+             true ->
+               receive_big_file(FD, ChunkSize, ClientSocket, NewTotal, TotalSize)
           end
       end;
-
     {error, Reason} ->
       io:format("Error de socket: ~p~n", [Reason]),
       file:close(FD),
       {error, Reason}
   end.
-
 
 receive_small_file(FileName, FileSize, ClientSocket) ->
   io:format("~nHola~n"),
