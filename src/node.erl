@@ -2,8 +2,8 @@
 
 -export([print_search_response/2, send_search_request/4, handle_client/1, run/0,
          invalid_name/3, get_id/2, send_name_request/2, join_network/2, hello/2,
-         remove_inactive_nodes/0, cli/1, create_tcp_server/0, run_tcp_server/2,
-         download/3, send_small_file/3, receive_small_file/3, send_download_request/2]).
+         remove_inactive_nodes/0, cli/1, create_tcp_server/0, run_tcp_server/2, download/3,
+         send_small_file/3, receive_small_file/3, send_download_request/2]).
 
 -define(DOWNLOADS_PATH, "downloads").
 -define(SHARED_PATH, "shared").
@@ -30,9 +30,9 @@ invalid_name(UdpSocket, Id, Timeout) ->
       Tokens = string:tokens(Msg, " \n"),
       case Tokens of
         ["INVALID_NAME", _ReqId] ->
-               End = erlang:monotonic_time(millisecond) - Start,
-               Remaining = Timeout - End,
-               invalid_name(UdpSocket, Id, Remaining);
+          End = erlang:monotonic_time(millisecond) - Start,
+          Remaining = Timeout - End,
+          invalid_name(UdpSocket, Id, Remaining);
         _ ->
           End = erlang:monotonic_time(millisecond) - Start,
           Remaining = Timeout - End,
@@ -145,8 +145,8 @@ hello(UdpSocket, Id) ->
       erlang:cancel_timer(Ref),
       ok;
     continue ->
-          send_hello(UdpSocket, Id),
-          hello(UdpSocket, Id)
+      send_hello(UdpSocket, Id),
+      hello(UdpSocket, Id)
   end.
 
 remove_inactive_nodes() ->
@@ -297,6 +297,37 @@ cli(Id) ->
       cli(Id)
   end.
 
+send_big_file(FD, ClientSocket, ChunkIndex) ->
+  io:format("HOla1~n"),
+  case file:read(FD, ?DEFAULT_CHUNK_SIZE) of
+    eof ->
+      io:format("HOla3~n"),
+      file:close(FD),
+      ok;
+    {ok, FileContent} ->
+      io:format("HOla2~n"),
+      ContentSize = byte_size(FileContent),
+      Payload =
+        if ContentSize == ?DEFAULT_CHUNK_SIZE ->
+             <<?STATUS_CHUNK:8/integer-unsigned-big,
+               ChunkIndex:16/integer-unsigned-big,
+               ?DEFAULT_CHUNK_SIZE:32/integer-unsigned-big,
+               FileContent:?DEFAULT_CHUNK_SIZE/binary>>;
+           % ContentSize can't never be greater than
+           % DEFAULT_CHUNK_SIZE, since we are reading
+           % DEFAULT_CHUNK_SIZE bytes in file:read().
+           true ->
+             <<?STATUS_CHUNK:8/integer-unsigned-big,
+               ChunkIndex:16/integer-unsigned-big,
+               ContentSize:32/integer-unsigned-big,
+               FileContent:ContentSize/binary>>
+        end,
+      gen_tcp:send(ClientSocket, Payload),
+      send_big_file(FD, ClientSocket, ChunkIndex + 1);
+    {error, Reason} ->
+      error({read_failed, Reason})
+  end.
+
 handle_client(ClientSocket) ->
   case gen_tcp:recv(ClientSocket, 0) of
     {ok, Req} ->
@@ -328,16 +359,24 @@ handle_client(ClientSocket) ->
           gen_tcp:close(ClientSocket),
           ok;
         ["DOWNLOAD_REQUEST", FileName] ->
-          % {_, FileSize} = utils:search(FileName),
-          {ok, Info} =
-            file:read_file_info(
-              filename:join([?SHARED_PATH, FileName])),
+          Path = filename:join([?SHARED_PATH, FileName]),
+          {ok, Info} = file:read_file_info(Path),
           FileSize = Info#file_info.size,
           io:format("~nchau~n"),
           if FileSize =< ?FOUR_MB ->
                send_small_file(FileName, FileSize, ClientSocket);
              true ->
-               ok
+               case file:open(Path, [read, binary]) of
+                 {ok, FD} ->
+                   Payload =
+                     <<?STATUS_OK:8/integer-unsigned-big,
+                       FileSize:32/integer-unsigned-big,
+                       ?DEFAULT_CHUNK_SIZE:32/integer-unsigned-big>>,
+                   gen_tcp:send(ClientSocket, Payload),
+                   send_big_file(FD, ClientSocket, 0);
+                 {error, Reason} ->
+                   error({open_file_failed, Reason})
+               end
           end;
         _ ->
           io:format("wtf?~n")
@@ -423,14 +462,18 @@ send_small_file(FileName, FileSize, ClientSocket) ->
       error({read_file_error, Reason})
   end.
 
-
 download(FileName, NodeId, ClientSocket) ->
   case gen_tcp:recv(ClientSocket, 5) of
     {ok, <<?STATUS_OK:8, FileSize:32/big-unsigned-integer>>} ->
       if FileSize =< ?FOUR_MB ->
            receive_small_file(FileName, FileSize, ClientSocket);
          true ->
-           ok
+           case gen_tcp:recv(ClientSocket, 4) of
+             {ok, ChunkSize} ->
+               Path = filename:join([?DOWNLOADS_PATH, FileName]),
+               {ok, FD} = file:open(Path, [write, binary]),
+               receive_big_file(FD, ChunkSize, ClientSocket)
+           end
       end
   end.
 
@@ -456,6 +499,26 @@ send_download_request(FileName, NodeId) ->
     _ ->
       io:format("~nUnkown node id~n"),
       ok
+  end.
+
+receive_big_file(FD, ChunkSize, ClientSocket) ->
+  case gen_tcp:recv(ClientSocket, 7) of
+    {ok,
+     <<?STATUS_CHUNK:8,
+       ChunkIndex:16/big-unsigned-integer,
+       CurrentChunkSize:32/big-unsigned-integer>>} ->
+      case gen_tcp:recv(ClientSocket, CurrentChunkSize) of
+        {ok, Content} ->
+          file:write(FD, Content),
+          if CurrentChunkSize < ChunkSize ->
+               file:close(FD),
+               ok;
+             true ->
+               receive_big_file(FD, ChunkSize, ClientSocket)
+          end
+      end;
+    {error, Reason} ->
+      io:format("HUbo error: ~p~n", [Reason])
   end.
 
 receive_small_file(FileName, FileSize, ClientSocket) ->
