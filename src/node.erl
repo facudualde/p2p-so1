@@ -2,20 +2,25 @@
 
 -export([print_search_response/2, send_search_request/4, handle_client/1, run/0,
          invalid_name/3, get_id/2, send_name_request/2, join_network/2, hello/2,
-         remove_inactive_nodes/0, cli/1, create_tcp_server/0, run_tcp_server/2]).
+         remove_inactive_nodes/0, cli/1, create_tcp_server/0, run_tcp_server/2,
+         download/3, send_small_file/3, receive_small_file/3, send_download_request/2]).
 
+-define(DOWNLOADS_PATH, "downloads").
+-define(SHARED_PATH, "shared").
 -define(UDP_PORT, 12346).
 -define(TCP_PORT, 12345).
-% -define(DEFAULT_CHUNK_SIZE, 1048576).
-% -define(FOUR_MB, 4 * 1024 * 1024).
-% -define(STATUS_OK, 101).
-% -define(STATUS_CHUNK, 111).
+-define(DEFAULT_CHUNK_SIZE, 1048576).
+-define(FOUR_MB, 4 * 1024 * 1024).
+-define(STATUS_OK, 101).
+-define(STATUS_CHUNK, 111).
 % -define(STATUS_FILE_NOT_FOUND, 112).
 % -define(STATUS_OPEN_FAILED, 113).
 % -define(STATUS_READ_FAILED, 114).
 % -define(STATUS_BAD_REQUEST, 115).
 -define(TIMEOUT_INVALID_NAME, 10000).
 -define(TIMEOUT_SEARCH_RESPONSE, 3000).
+
+-include_lib("kernel/include/file.hrl").
 
 invalid_name(UdpSocket, Id, Timeout) ->
   Start = erlang:monotonic_time(millisecond),
@@ -27,8 +32,7 @@ invalid_name(UdpSocket, Id, Timeout) ->
         ["INVALID_NAME", _ReqId] ->
                End = erlang:monotonic_time(millisecond) - Start,
                Remaining = Timeout - End,
-               invalid_name(UdpSocket, Id, Remaining)
-          end;
+               invalid_name(UdpSocket, Id, Remaining);
         _ ->
           End = erlang:monotonic_time(millisecond) - Start,
           Remaining = Timeout - End,
@@ -142,7 +146,7 @@ hello(UdpSocket, Id) ->
       ok;
     continue ->
           send_hello(UdpSocket, Id),
-          hello(UdpSocket, Id);
+          hello(UdpSocket, Id)
   end.
 
 remove_inactive_nodes() ->
@@ -275,6 +279,15 @@ cli(Id) ->
           wait([Ref]),
           cli(Id)
       end;
+    "6" ->
+      FileName =
+        string:trim(
+          io:get_line("File name: ")),
+      NodeId =
+        string:trim(
+          io:get_line("Node id: ")),
+      send_download_request(FileName, NodeId),
+      cli(Id);
     "7" ->
       io:format("Bye~n"),
       loop ! stop,
@@ -314,6 +327,18 @@ handle_client(ClientSocket) ->
           end,
           gen_tcp:close(ClientSocket),
           ok;
+        ["DOWNLOAD_REQUEST", FileName] ->
+          % {_, FileSize} = utils:search(FileName),
+          {ok, Info} =
+            file:read_file_info(
+              filename:join([?SHARED_PATH, FileName])),
+          FileSize = Info#file_info.size,
+          io:format("~nchau~n"),
+          if FileSize =< ?FOUR_MB ->
+               send_small_file(FileName, FileSize, ClientSocket);
+             true ->
+               ok
+          end;
         _ ->
           io:format("wtf?~n")
       end;
@@ -382,4 +407,64 @@ run() ->
            [HelloRef, RemoveInactiveNodesRef, CliRef, TcpServerRef]);
     {error, Reason} ->
       error({udp_open_failed, Reason})
+  end.
+
+send_small_file(FileName, FileSize, ClientSocket) ->
+  FilePath = filename:join([?SHARED_PATH, FileName]),
+  io:format("~nSENT~n"),
+  case file:read_file(FilePath) of
+    {ok, FileContent} ->
+      Msg =
+        <<?STATUS_OK:8/big-unsigned-integer,
+          FileSize:32/big-unsigned-integer,
+          FileContent/binary>>,
+      gen_tcp:send(ClientSocket, Msg);
+    {error, Reason} ->
+      error({read_file_error, Reason})
+  end.
+
+
+download(FileName, NodeId, ClientSocket) ->
+  case gen_tcp:recv(ClientSocket, 5) of
+    {ok, <<?STATUS_OK:8, FileSize:32/big-unsigned-integer>>} ->
+      if FileSize =< ?FOUR_MB ->
+           receive_small_file(FileName, FileSize, ClientSocket);
+         true ->
+           ok
+      end
+  end.
+
+send_download_request(FileName, NodeId) ->
+  case utils:load_node_info(NodeId) of
+    #{<<"ip">> := Ip, <<"port">> := Port} ->
+      case gen_tcp:connect(binary_to_list(Ip),
+                           ?TCP_PORT,
+                           [binary, {active, false}, {reuseaddr, true}, {packet, 0}])
+      of
+        {ok, ClientSocket} ->
+          Msg = list_to_binary("DOWNLOAD_REQUEST " ++ FileName ++ " " ++ "\n"),
+          case gen_tcp:send(ClientSocket, Msg) of
+            ok ->
+              {DownloadPid, DownloadRef} =
+                spawn_monitor(?MODULE, download, [FileName, NodeId, ClientSocket]);
+            {error, Reason} ->
+              error({tcp_send_failed, Reason})
+          end;
+        {error, Reason} ->
+          error({tcp_connect_failed, Reason})
+      end;
+    _ ->
+      io:format("~nUnkown node id~n"),
+      ok
+  end.
+
+receive_small_file(FileName, FileSize, ClientSocket) ->
+  io:format("~nHola~n"),
+  case gen_tcp:recv(ClientSocket, FileSize) of
+    {ok, FileContent} ->
+      % io:format("~nhola~n"),
+      FilePath = filename:join([?DOWNLOADS_PATH, FileName]),
+      file:write_file(FilePath, FileContent);
+    {error, Reason} ->
+      io:format("~nAlgo pasó: ~p~n", [Reason])
   end.
