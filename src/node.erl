@@ -147,7 +147,7 @@ cli(Id) ->
   io:format("3: list shared files~n"),
   io:format("4: list downloaded files~n"),
   io:format("5: search files in the network~n"),
-  io:format("6: download file from the network~n"),
+  io:format("6: download file from a node~n"),
   io:format("7: exit~n"),
   case string:trim(
          io:get_line("> "))

@@ -10,6 +10,11 @@ run:
   -pa _build/default/lib/jsx/ebin \
   -s node run -s init stop
 
+setup:
+	git clone https://github.com/erlang/rebar3.git
+	cd rebar3
+	./bootstrap
+
 clean:
 	rm -rf build
 	rm -rf _build
