@@ -1,8 +1,8 @@
 -module(node).
 
--export([print_search_response/2, send_search_request/4, handle_client/1, run/0,
+-export([print_search_response/2, send_search_request/5, handle_client/1, run/0,
          invalid_name/3, get_id/2, send_name_request/2, join_network/2, hello/2,
-         remove_inactive_nodes/0, cli/1, create_tcp_server/0, run_tcp_server/2, download/3,
+         remove_inactive_nodes/0, cli/1, create_tcp_server/0, run_tcp_server/2, download/2,
          send_small_file/3, receive_small_file/3, send_download_request/2]).
 
 -define(DOWNLOADS_PATH, "downloads").
@@ -13,7 +13,7 @@
 -define(FOUR_MB, 4 * 1024 * 1024).
 -define(STATUS_OK, 101).
 -define(STATUS_CHUNK, 111).
-% -define(STATUS_FILE_NOT_FOUND, 112).
+-define(STATUS_FILE_NOT_FOUND, 112).
 % -define(STATUS_OPEN_FAILED, 113).
 % -define(STATUS_READ_FAILED, 114).
 % -define(STATUS_BAD_REQUEST, 115).
@@ -222,7 +222,7 @@ collect_search_responses(ClientSocket, NodeId) ->
       ok
   end.
 
-send_search_request(Id, Ip, NodeId, Pattern) ->
+send_search_request(Id, Ip, Port, NodeId, Pattern) ->
   case gen_tcp:connect(binary_to_list(Ip),
                        ?TCP_PORT,
                        [binary, {active, false}, {reuseaddr, true}, {packet, 0}])
@@ -248,7 +248,7 @@ distributed_search(Id, Pattern) ->
       {PrinterPid, PrinterRef} = spawn_monitor(?MODULE, print_search_response, [#{}, NodeIds]),
       register(printer, PrinterPid),
       maps:foreach(fun(NodeId, #{<<"ip">> := Ip, <<"port">> := Port}) ->
-                      spawn(?MODULE, send_search_request, [Id, Ip, NodeId, Pattern])
+                      spawn(?MODULE, send_search_request, [Id, Ip, Port, NodeId, Pattern])
                    end,
                    Nodes),
       {ref, PrinterRef}
@@ -376,22 +376,28 @@ handle_client(ClientSocket) ->
           ok;
         ["DOWNLOAD_REQUEST", FileName] ->
           Path = filename:join([?SHARED_PATH, FileName]),
-          {ok, Info} = file:read_file_info(Path),
-          FileSize = Info#file_info.size,
-          if FileSize =< ?FOUR_MB ->
-               send_small_file(FileName, FileSize, ClientSocket);
-             true ->
-               case file:open(Path, [read, binary]) of
-                 {ok, FD} ->
-                   Payload =
-                     <<?STATUS_OK:8/integer-unsigned-big,
-                       FileSize:32/integer-unsigned-big,
-                       ?DEFAULT_CHUNK_SIZE:32/integer-unsigned-big>>,
-                   gen_tcp:send(ClientSocket, Payload),
-                   send_big_file(FD, ClientSocket, 0);
-                 {error, Reason} ->
-                   error({open_file_failed, Reason})
-               end
+          case file:read_file_info(Path) of
+            {ok, Info} ->
+              FileSize = Info#file_info.size,
+              if FileSize =< ?FOUR_MB ->
+                   send_small_file(FileName, FileSize, ClientSocket);
+                 true ->
+                   case file:open(Path, [read, binary]) of
+                     {ok, FD} ->
+                       Payload =
+                         <<?STATUS_OK:8/integer-unsigned-big,
+                           FileSize:32/integer-unsigned-big,
+                           ?DEFAULT_CHUNK_SIZE:32/integer-unsigned-big>>,
+                       gen_tcp:send(ClientSocket, Payload),
+                       send_big_file(FD, ClientSocket, 0);
+                     {error, Reason} ->
+                       error({open_file_failed, Reason})
+                   end
+              end;
+            {error, _Reason} ->
+              Payload =
+                <<?STATUS_FILE_NOT_FOUND:8/big-unsigned-integer, 0:32/big-unsigned-integer>>,
+              gen_tcp:send(ClientSocket, Payload)
           end
       end;
     {error, closed} ->
@@ -477,9 +483,10 @@ send_small_file(FileName, FileSize, ClientSocket) ->
       error({read_file_error, Reason})
   end.
 
-download(FileName, NodeId, ClientSocket) ->
-  case gen_tcp:recv(ClientSocket, 5) of
-    {ok, <<?STATUS_OK:8, FileSize:32/big-unsigned-integer>>} ->
+download(FileName, ClientSocket) ->
+  case gen_tcp:recv(ClientSocket, 1) of
+    {ok, <<?STATUS_OK:8/big-unsigned-integer>>} ->
+      {ok, <<FileSize:32/big-unsigned-integer>>} = gen_tcp:recv(ClientSocket, 4),
       if FileSize =< ?FOUR_MB ->
            receive_small_file(FileName, FileSize, ClientSocket);
          true ->
@@ -489,45 +496,45 @@ download(FileName, NodeId, ClientSocket) ->
                {ok, FD} = file:open(Path, [write, binary]),
                receive_big_file(FD, ChunkSize, ClientSocket, 0, FileSize)
            end
-      end
+      end;
+    {ok, <<?STATUS_FILE_NOT_FOUND:8/big-unsigned-integer>>} ->
+      io:format("~nFile not found~n"),
+      ok
   end.
 
 send_download_request(FileName, NodeId) ->
-  case utils:load_node_info(NodeId) of
-    #{<<"ip">> := Ip, <<"port">> := Port} ->
-      case gen_tcp:connect(binary_to_list(Ip),
-                           ?TCP_PORT,
-                           [binary, {active, false}, {reuseaddr, true}, {packet, 0}])
-      of
-        {ok, ClientSocket} ->
-          Msg = list_to_binary("DOWNLOAD_REQUEST " ++ FileName ++ " " ++ "\n"),
-          case gen_tcp:send(ClientSocket, Msg) of
-            ok ->
-              {DownloadPid, DownloadRef} =
-                spawn_monitor(?MODULE, download, [FileName, NodeId, ClientSocket]);
-            {error, Reason} ->
-              error({tcp_send_failed, Reason})
-          end;
-        {error, Reason} ->
-          error({tcp_connect_failed, Reason})
-      end;
-    _ ->
-      io:format("~nUnkown node id~n"),
-      ok
+  try
+    #{<<"ip">> := Ip, <<"port">> := Port} = utils:load_node_info(NodeId),
+    case gen_tcp:connect(binary_to_list(Ip),
+                         ?TCP_PORT,
+                         [binary, {active, false}, {reuseaddr, true}, {packet, 0}])
+    of
+      {ok, ClientSocket} ->
+        Msg = list_to_binary("DOWNLOAD_REQUEST " ++ FileName ++ " " ++ "\n"),
+        case gen_tcp:send(ClientSocket, Msg) of
+          ok ->
+            spawn(?MODULE, download, [FileName, ClientSocket]);
+          {error, Reason} ->
+            error({tcp_send_failed, Reason})
+        end;
+      {error, Reason} ->
+        error({tcp_connect_failed, Reason})
+    end
+  catch
+    error:node_info_failed ->
+      io:format("~nUnkown node id~n")
   end.
 
 receive_big_file(FD, ChunkSize, ClientSocket, BytesReceived, TotalSize) ->
   case gen_tcp:recv(ClientSocket, 7, 4000) of
     {ok,
      <<?STATUS_CHUNK:8,
-       ChunkIndex:16/big-unsigned-integer,
+       _ChunkIndex:16/big-unsigned-integer,
        CurrentChunkSize:32/big-unsigned-integer>>} ->
       case gen_tcp:recv(ClientSocket, CurrentChunkSize, 4000) of
         {ok, Content} ->
           file:write(FD, Content),
           NewTotal = BytesReceived + CurrentChunkSize,
-          io:format("Chunk ~p recibido (~p bytes), total acumulado: ~p/~p~n",
-                    [ChunkIndex, CurrentChunkSize, NewTotal, TotalSize]),
           if NewTotal >= TotalSize ->
                file:close(FD),
                io:format("Transferencia completa.~n"),
@@ -543,10 +550,8 @@ receive_big_file(FD, ChunkSize, ClientSocket, BytesReceived, TotalSize) ->
   end.
 
 receive_small_file(FileName, FileSize, ClientSocket) ->
-  io:format("~nHola~n"),
   case gen_tcp:recv(ClientSocket, FileSize) of
     {ok, FileContent} ->
-      % io:format("~nhola~n"),
       FilePath = filename:join([?DOWNLOADS_PATH, FileName]),
       file:write_file(FilePath, FileContent);
     {error, Reason} ->

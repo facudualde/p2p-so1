@@ -1,7 +1,8 @@
 -module(utils).
 
 -export([search/1, get_random_id/0, load_register/0, save_register/1, update_register/3,
-         get_my_ip/0, reset_register/0, show_register/0, shared_files/0, downloaded_files/0, load_node_info/1]).
+         get_my_ip/0, reset_register/0, show_register/0, shared_files/0, downloaded_files/0,
+         load_node_info/1]).
 
 -define(ALLOWED_CHARS, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789").
 -define(NODES_REGISTER_PATH, "nodes_register.json").
@@ -102,7 +103,8 @@ search(Pattern) ->
 load_node_info(NodeId) ->
   KnownNodes = load_register(),
   case maps:find(list_to_binary(NodeId), KnownNodes) of
-    {ok, Info} -> Info;
-    error -> error({node_info_failed})
+    {ok, Info} ->
+      Info;
+    error ->
+      error(node_info_failed)
   end.
-
