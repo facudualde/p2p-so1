@@ -551,12 +551,17 @@ receive_big_file(FD, ChunkSize, ClientSocket, BytesReceived, TotalSize) ->
   end.
 
 receive_small_file(FileName, FileSize, ClientSocket) ->
-  case gen_tcp:recv(ClientSocket, FileSize) of
-    {ok, FileContent} ->
-      FilePath = filename:join([?DOWNLOADS_PATH, FileName]),
-      ok = utils:ensure_directory_exists(?DOWNLOADS_PATH),
-      file:write_file(FilePath, FileContent),
-      io:format("Download completed.~n");
-    {error, Reason} ->
-      io:format("Something happened: ~p~n", [Reason])
+  FilePath = filename:join([?DOWNLOADS_PATH, FileName]),
+  if FileSize == 0 ->
+       file:write_file(FilePath, <<>>),
+       io:format("Download completed.~n");
+     true ->
+       case gen_tcp:recv(ClientSocket, FileSize) of
+         {ok, FileContent} ->
+           ok = utils:ensure_directory_exists(?DOWNLOADS_PATH),
+           file:write_file(FilePath, FileContent),
+           io:format("Download completed.~n");
+         {error, Reason} ->
+           io:format("Something happened: ~p~n", [Reason])
+       end
   end.
