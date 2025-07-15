@@ -2,7 +2,7 @@
 
 -export([search/1, get_random_id/0, load_register/0, save_register/1, update_register/3,
          get_my_ip/0, reset_register/0, show_register/0, shared_files/0, downloaded_files/0,
-         load_node_info/1]).
+         load_node_info/1, ensure_directory_exists/1]).
 
 -define(ALLOWED_CHARS, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789").
 -define(NODES_REGISTER_PATH, "nodes_register.json").
@@ -63,6 +63,7 @@ show_register() ->
 
 shared_files() ->
   io:format("~n"),
+  ok = ensure_directory_exists(?SHARED_PATH),
   case file:list_dir(?SHARED_PATH) of
     {ok, List} ->
       if length(List) =:= 0 ->
@@ -78,6 +79,7 @@ shared_files() ->
 
 downloaded_files() ->
   io:format("~n"),
+  ok = ensure_directory_exists(?DOWNLOADS_PATH),
   case file:list_dir(?DOWNLOADS_PATH) of
     {ok, List} ->
       if length(List) =:= 0 ->
@@ -108,3 +110,9 @@ load_node_info(NodeId) ->
     error ->
       error(node_info_failed)
   end.
+
+ensure_directory_exists(Dir) ->
+    case file:read_file_info(Dir) of
+        {ok, #file_info{type = directory}} -> ok;
+        _ -> file:make_dir(Dir)
+    end.

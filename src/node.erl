@@ -3,7 +3,7 @@
 -export([print_search_response/2, send_search_request/5, handle_client/1, run/0,
          invalid_name/3, get_id/2, send_name_request/2, join_network/2, hello/2,
          remove_inactive_nodes/0, cli/1, create_tcp_server/0, run_tcp_server/2, download/2,
-         send_small_file/3, receive_small_file/3, send_download_request/2]).
+         send_small_file/3, receive_small_file/3, send_download_request/2, send_big_file/3]).
 
 -define(DOWNLOADS_PATH, "downloads").
 -define(SHARED_PATH, "shared").
@@ -264,7 +264,7 @@ cli(Id) ->
   io:format("6: download file from the network~n"),
   io:format("7: exit~n"),
   case string:trim(
-         io:get_line("input: "))
+         io:get_line("> "))
   of
     "1" ->
       io:format("~nYour id: ~s~n", [Id]),
@@ -313,36 +313,6 @@ cli(Id) ->
       cli(Id)
   end.
 
-send_big_file(FD, ClientSocket, ChunkIndex) ->
-  io:format("HOla1~n"),
-  case file:read(FD, ?DEFAULT_CHUNK_SIZE) of
-    eof ->
-      io:format("HOla3~n"),
-      file:close(FD),
-      ok;
-    {ok, FileContent} ->
-      io:format("HOla2~n"),
-      ContentSize = byte_size(FileContent),
-      Payload =
-        if ContentSize == ?DEFAULT_CHUNK_SIZE ->
-             <<?STATUS_CHUNK:8/integer-unsigned-big,
-               ChunkIndex:16/integer-unsigned-big,
-               ?DEFAULT_CHUNK_SIZE:32/integer-unsigned-big,
-               FileContent:?DEFAULT_CHUNK_SIZE/binary>>;
-           % ContentSize can't never be greater than
-           % DEFAULT_CHUNK_SIZE, since we are reading
-           % DEFAULT_CHUNK_SIZE bytes in file:read().
-           true ->
-             <<?STATUS_CHUNK:8/integer-unsigned-big,
-               ChunkIndex:16/integer-unsigned-big,
-               ContentSize:32/integer-unsigned-big,
-               FileContent:ContentSize/binary>>
-        end,
-      gen_tcp:send(ClientSocket, Payload),
-      send_big_file(FD, ClientSocket, ChunkIndex + 1);
-    {error, Reason} ->
-      error({read_failed, Reason})
-  end.
 
 handle_client(ClientSocket) ->
   case gen_tcp:recv(ClientSocket, 0) of
@@ -389,6 +359,7 @@ handle_client(ClientSocket) ->
                            FileSize:32/integer-unsigned-big,
                            ?DEFAULT_CHUNK_SIZE:32/integer-unsigned-big>>,
                        gen_tcp:send(ClientSocket, Payload),
+                       io:format("Sending requested file ~n"),
                        send_big_file(FD, ClientSocket, 0);
                      {error, Reason} ->
                        error({open_file_failed, Reason})
@@ -469,16 +440,42 @@ run() ->
       error({udp_open_failed, Reason})
   end.
 
+send_big_file(FD, ClientSocket, ChunkIndex) ->
+  case file:read(FD, ?DEFAULT_CHUNK_SIZE) of
+    eof ->
+      file:close(FD),
+      io:format("Transfer completed~n"),
+      ok;
+    {ok, FileContent} ->
+      ContentSize = byte_size(FileContent),
+      Payload =
+        if ContentSize == ?DEFAULT_CHUNK_SIZE ->
+             <<?STATUS_CHUNK:8/integer-unsigned-big,
+               ChunkIndex:16/integer-unsigned-big,
+               ?DEFAULT_CHUNK_SIZE:32/integer-unsigned-big,
+               FileContent:?DEFAULT_CHUNK_SIZE/binary>>;
+           true ->
+             <<?STATUS_CHUNK:8/integer-unsigned-big,
+               ChunkIndex:16/integer-unsigned-big,
+               ContentSize:32/integer-unsigned-big,
+               FileContent:ContentSize/binary>>
+        end,
+      gen_tcp:send(ClientSocket, Payload),
+      send_big_file(FD, ClientSocket, ChunkIndex + 1);
+    {error, Reason} ->
+      error({read_failed, Reason})
+  end.
+
 send_small_file(FileName, FileSize, ClientSocket) ->
   FilePath = filename:join([?SHARED_PATH, FileName]),
-  io:format("~nSENT~n"),
   case file:read_file(FilePath) of
     {ok, FileContent} ->
       Msg =
         <<?STATUS_OK:8/big-unsigned-integer,
           FileSize:32/big-unsigned-integer,
           FileContent/binary>>,
-      gen_tcp:send(ClientSocket, Msg);
+      gen_tcp:send(ClientSocket, Msg),
+      io:format("~n Transfer completed~n");
     {error, Reason} ->
       error({read_file_error, Reason})
   end.
@@ -493,12 +490,12 @@ download(FileName, ClientSocket) ->
            case gen_tcp:recv(ClientSocket, 4) of
              {ok, <<ChunkSize:32/big-unsigned-integer>>} ->  
                Path = filename:join([?DOWNLOADS_PATH, FileName]),
-               ok = ensure_directory_exists(?DOWNLOADS_PATH),
+               ok = utils:ensure_directory_exists(?DOWNLOADS_PATH),
                case file:open(Path, [write, binary]) of
                  {ok, FD} ->
                      receive_big_file(FD, ChunkSize, ClientSocket, 0, FileSize);
                  {error, Reason} ->
-                     io:format("Error al abrir archivo: ~p~n", [Reason]),
+                     io:format("Error opening file: ~p~n", [Reason]),
                      {error, Reason}
                end
            end
@@ -544,14 +541,14 @@ receive_big_file(FD, ChunkSize, ClientSocket, BytesReceived, TotalSize) ->
           NewTotal = BytesReceived + CurrentChunkSize,
           if NewTotal >= TotalSize ->
                file:close(FD),
-               io:format("Transferencia completa.~n"),
+               io:format("Download completed.~n"),
                ok;
              true ->
                receive_big_file(FD, ChunkSize, ClientSocket, NewTotal, TotalSize)
           end
       end;
     {error, Reason} ->
-      io:format("Error de socket: ~p~n", [Reason]),
+      io:format("Socket error: ~p~n", [Reason]),
       file:close(FD),
       {error, Reason}
   end.
@@ -560,14 +557,9 @@ receive_small_file(FileName, FileSize, ClientSocket) ->
   case gen_tcp:recv(ClientSocket, FileSize) of
     {ok, FileContent} ->
       FilePath = filename:join([?DOWNLOADS_PATH, FileName]),
-      ok = ensure_directory_exists(?DOWNLOADS_PATH),
-      file:write_file(FilePath, FileContent);
+      ok = utils:ensure_directory_exists(?DOWNLOADS_PATH),
+      file:write_file(FilePath, FileContent),
+      io:format("Download completed.~n");
     {error, Reason} ->
-      io:format("~nAlgo pasó: ~p~n", [Reason])
+      io:format("Something happened: ~p~n", [Reason])
   end.
-
-ensure_directory_exists(Dir) ->
-    case file:read_file_info(Dir) of
-        {ok, #file_info{type = directory}} -> ok;
-        _ -> file:make_dir(Dir)
-    end.
