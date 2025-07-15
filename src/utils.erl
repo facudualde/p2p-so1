@@ -1,8 +1,8 @@
 -module(utils).
 
--export([search/1, get_random_id/0, load_register/0, save_register/1, update_register/3,
-         get_my_ip/0, reset_register/0, show_register/0, shared_files/0, downloaded_files/0,
-         load_node_info/1, ensure_directory_exists/1]).
+-export([search/1, get_random_id/0, load_register/0, save_register/1, get_my_ip/0,
+         reset_register/0, show_register/0, shared_files/0, downloaded_files/0, load_node_info/1,
+         ensure_directory_exists/1]).
 
 -define(ALLOWED_CHARS, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789").
 -define(NODES_REGISTER_PATH, "nodes_register.json").
@@ -34,11 +34,6 @@ load_register() ->
 
 save_register(Map) ->
   file:write_file(?NODES_REGISTER_PATH, jsx:encode(Map)).
-
-update_register(Id, Ip, Port) ->
-  Nodes = load_register(),
-  Update = maps:put(Id, #{ip => list_to_binary(Ip), port => Port}, Nodes),
-  save_register(Update).
 
 reset_register() ->
   file:write_file(?NODES_REGISTER_PATH, "{}").
@@ -112,7 +107,10 @@ load_node_info(NodeId) ->
   end.
 
 ensure_directory_exists(Dir) ->
-    case file:read_file_info(Dir) of
-        {ok, #file_info{type = directory}} -> ok;
-        _ -> file:make_dir(Dir)
-    end.
+  case file:read_file_info(Dir) of
+    {ok, #file_info{type = directory}} ->
+      ok;
+    _ ->
+      file:make_dir(Dir)
+  end.
+

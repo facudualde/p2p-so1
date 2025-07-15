@@ -313,7 +313,6 @@ cli(Id) ->
       cli(Id)
   end.
 
-
 handle_client(ClientSocket) ->
   case gen_tcp:recv(ClientSocket, 0) of
     {ok, Req} ->
@@ -488,15 +487,15 @@ download(FileName, ClientSocket) ->
            receive_small_file(FileName, FileSize, ClientSocket);
          true ->
            case gen_tcp:recv(ClientSocket, 4) of
-             {ok, <<ChunkSize:32/big-unsigned-integer>>} ->  
+             {ok, <<ChunkSize:32/big-unsigned-integer>>} ->
                Path = filename:join([?DOWNLOADS_PATH, FileName]),
                ok = utils:ensure_directory_exists(?DOWNLOADS_PATH),
                case file:open(Path, [write, binary]) of
                  {ok, FD} ->
-                     receive_big_file(FD, ChunkSize, ClientSocket, 0, FileSize);
+                   receive_big_file(FD, ChunkSize, ClientSocket, 0, FileSize);
                  {error, Reason} ->
-                     io:format("Error opening file: ~p~n", [Reason]),
-                     {error, Reason}
+                   io:format("Error opening file: ~p~n", [Reason]),
+                   {error, Reason}
                end
            end
       end;
@@ -504,7 +503,6 @@ download(FileName, ClientSocket) ->
       io:format("~nFile not found~n"),
       ok
   end.
-
 
 send_download_request(FileName, NodeId) ->
   try
