@@ -14,11 +14,9 @@
 -define(STATUS_OK, 101).
 -define(STATUS_CHUNK, 111).
 -define(STATUS_FILE_NOT_FOUND, 112).
-% -define(STATUS_OPEN_FAILED, 113).
-% -define(STATUS_READ_FAILED, 114).
-% -define(STATUS_BAD_REQUEST, 115).
 -define(TIMEOUT_INVALID_NAME, 10000).
 -define(TIMEOUT_SEARCH_RESPONSE, 3000).
+-define(TIMEOUT_DOWNLOAD, 4000).
 
 -include_lib("kernel/include/file.hrl").
 
@@ -480,7 +478,7 @@ send_small_file(FileName, FileSize, ClientSocket) ->
   end.
 
 download(FileName, ClientSocket) ->
-  case gen_tcp:recv(ClientSocket, 1) of
+  case gen_tcp:recv(ClientSocket, 1, ?TIMEOUT_DOWNLOAD) of
     {ok, <<?STATUS_OK:8/big-unsigned-integer>>} ->
       {ok, <<FileSize:32/big-unsigned-integer>>} = gen_tcp:recv(ClientSocket, 4),
       if FileSize =< ?FOUR_MB ->
@@ -501,7 +499,9 @@ download(FileName, ClientSocket) ->
       end;
     {ok, <<?STATUS_FILE_NOT_FOUND:8/big-unsigned-integer>>} ->
       io:format("~nFile not found~n"),
-      ok
+      ok;
+    {error, timeout} ->
+      io:format("~nTcp timeout expired~n")
   end.
 
 send_download_request(FileName, NodeId) ->
@@ -528,12 +528,12 @@ send_download_request(FileName, NodeId) ->
   end.
 
 receive_big_file(FD, ChunkSize, ClientSocket, BytesReceived, TotalSize) ->
-  case gen_tcp:recv(ClientSocket, 7, 4000) of
+  case gen_tcp:recv(ClientSocket, 7, ?TIMEOUT_DOWNLOAD) of
     {ok,
      <<?STATUS_CHUNK:8,
        _ChunkIndex:16/big-unsigned-integer,
        CurrentChunkSize:32/big-unsigned-integer>>} ->
-      case gen_tcp:recv(ClientSocket, CurrentChunkSize, 4000) of
+      case gen_tcp:recv(ClientSocket, CurrentChunkSize, ?TIMEOUT_DOWNLOAD) of
         {ok, Content} ->
           file:write(FD, Content),
           NewTotal = BytesReceived + CurrentChunkSize,
@@ -546,9 +546,8 @@ receive_big_file(FD, ChunkSize, ClientSocket, BytesReceived, TotalSize) ->
           end
       end;
     {error, Reason} ->
-      io:format("Socket error: ~p~n", [Reason]),
-      file:close(FD),
-      {error, Reason}
+      io:format("Download interruption: ~p~n", [Reason]),
+      file:close(FD)
   end.
 
 receive_small_file(FileName, FileSize, ClientSocket) ->
