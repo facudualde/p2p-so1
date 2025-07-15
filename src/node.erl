@@ -305,7 +305,7 @@ cli(Id) ->
       send_download_request(FileName, NodeId),
       cli(Id);
     "7" ->
-      io:format("Bye~n"),
+      io:format("Terminating program~n"),
       loop ! stop,
       ok;
     _ ->
@@ -475,7 +475,7 @@ send_small_file(FileName, FileSize, ClientSocket) ->
           FileSize:32/big-unsigned-integer,
           FileContent/binary>>,
       gen_tcp:send(ClientSocket, Msg),
-      io:format("~n Transfer completed~n");
+      io:format("~nTransfer completed~n");
     {error, Reason} ->
       error({read_file_error, Reason})
   end.
