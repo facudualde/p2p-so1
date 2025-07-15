@@ -136,7 +136,7 @@ loop(UdpSocket, TcpSocket, Id, InvalidIds, Refs) ->
   end.
 
 send_hello(UdpSocket, Id) ->
-  Msg = list_to_binary("HELLO " ++ Id ++ " " ++ integer_to_list(?UDP_PORT) ++ "\n"),
+  Msg = list_to_binary("HELLO " ++ Id ++ " " ++ integer_to_list(?TCP_PORT) ++ "\n"),
   case gen_udp:send(UdpSocket, {255, 255, 255, 255}, ?UDP_PORT, Msg) of
     ok ->
       ok;
@@ -224,7 +224,7 @@ collect_search_responses(ClientSocket, NodeId) ->
 
 send_search_request(Id, Ip, Port, NodeId, Pattern) ->
   case gen_tcp:connect(binary_to_list(Ip),
-                       ?TCP_PORT,
+                       list_to_integer(Port),
                        [binary, {active, false}, {reuseaddr, true}, {packet, 0}])
   of
     {ok, ClientSocket} ->
@@ -491,10 +491,16 @@ download(FileName, ClientSocket) ->
            receive_small_file(FileName, FileSize, ClientSocket);
          true ->
            case gen_tcp:recv(ClientSocket, 4) of
-             {ok, ChunkSize} ->
+             {ok, <<ChunkSize:32/big-unsigned-integer>>} ->  
                Path = filename:join([?DOWNLOADS_PATH, FileName]),
-               {ok, FD} = file:open(Path, [write, binary]),
-               receive_big_file(FD, ChunkSize, ClientSocket, 0, FileSize)
+               ok = ensure_directory_exists(?DOWNLOADS_PATH),
+               case file:open(Path, [write, binary]) of
+                 {ok, FD} ->
+                     receive_big_file(FD, ChunkSize, ClientSocket, 0, FileSize);
+                 {error, Reason} ->
+                     io:format("Error al abrir archivo: ~p~n", [Reason]),
+                     {error, Reason}
+               end
            end
       end;
     {ok, <<?STATUS_FILE_NOT_FOUND:8/big-unsigned-integer>>} ->
@@ -502,11 +508,12 @@ download(FileName, ClientSocket) ->
       ok
   end.
 
+
 send_download_request(FileName, NodeId) ->
   try
     #{<<"ip">> := Ip, <<"port">> := Port} = utils:load_node_info(NodeId),
     case gen_tcp:connect(binary_to_list(Ip),
-                         ?TCP_PORT,
+                         list_to_integer(Port),
                          [binary, {active, false}, {reuseaddr, true}, {packet, 0}])
     of
       {ok, ClientSocket} ->
@@ -553,7 +560,14 @@ receive_small_file(FileName, FileSize, ClientSocket) ->
   case gen_tcp:recv(ClientSocket, FileSize) of
     {ok, FileContent} ->
       FilePath = filename:join([?DOWNLOADS_PATH, FileName]),
+      ok = ensure_directory_exists(?DOWNLOADS_PATH),
       file:write_file(FilePath, FileContent);
     {error, Reason} ->
       io:format("~nAlgo pasó: ~p~n", [Reason])
   end.
+
+ensure_directory_exists(Dir) ->
+    case file:read_file_info(Dir) of
+        {ok, #file_info{type = directory}} -> ok;
+        _ -> file:make_dir(Dir)
+    end.
