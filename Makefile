@@ -2,6 +2,8 @@ build:
 	touch nodes_register.json && echo "{}" > nodes_register.json
 	rebar3 compile
 	mkdir build
+	mkdir shared 
+	mkdir downloads
 	erlc -o build src/*.erl 
 
 run:
@@ -13,6 +15,8 @@ run:
 clean:
 	rm -rf build
 	rm -rf _build
+	rm -rf shared
+	rm -rf downloads
 	rm nodes_register.json
 
 docker-up:
