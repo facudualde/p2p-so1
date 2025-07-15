@@ -239,14 +239,20 @@ send_search_request(Id, Ip, NodeId, Pattern) ->
 distributed_search(Id, Pattern) ->
   io:format("Doing distributed search...~n"),
   Nodes = utils:load_register(),
-  NodeIds = maps:keys(Nodes),
-  {PrinterPid, PrinterRef} = spawn_monitor(?MODULE, print_search_response, [#{}, NodeIds]),
-  register(printer, PrinterPid),
-  maps:foreach(fun(NodeId, #{<<"ip">> := Ip, <<"port">> := Port}) ->
-                  spawn(?MODULE, send_search_request, [Id, Ip, NodeId, Pattern])
-               end,
-               Nodes),
-  PrinterRef.
+  case maps:size(Nodes) of
+    0 ->
+      io:format("~nThere are not known nodes yet~n"),
+      empty;
+    _ ->
+      NodeIds = maps:keys(Nodes),
+      {PrinterPid, PrinterRef} = spawn_monitor(?MODULE, print_search_response, [#{}, NodeIds]),
+      register(printer, PrinterPid),
+      maps:foreach(fun(NodeId, #{<<"ip">> := Ip, <<"port">> := Port}) ->
+                      spawn(?MODULE, send_search_request, [Id, Ip, NodeId, Pattern])
+                   end,
+                   Nodes),
+      {ref, PrinterRef}
+  end.
 
 cli(Id) ->
   io:format("~nAvailable commands:~n"),
@@ -281,9 +287,13 @@ cli(Id) ->
           io:format("~nBad argument~n"),
           cli(Id);
         _ ->
-          Ref = distributed_search(Id, Pattern),
-          wait([Ref]),
-          cli(Id)
+          case distributed_search(Id, Pattern) of
+            empty ->
+              cli(Id);
+            {ref, Ref} ->
+              wait([Ref]),
+              cli(Id)
+          end
       end;
     "6" ->
       FileName =
