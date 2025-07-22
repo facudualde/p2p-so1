@@ -477,6 +477,30 @@ send_small_file(FileName, FileSize, ClientSocket) ->
       error({read_file_error, Reason})
   end.
 
+send_download_request(FileName, NodeId) ->
+  try
+    #{<<"ip">> := Ip, <<"port">> := Port} = utils:load_node_info(NodeId),
+    case gen_tcp:connect(binary_to_list(Ip),
+                         list_to_integer(Port),
+                         [binary, {active, false}, {reuseaddr, true}, {packet, 0}])
+    of
+      {ok, ClientSocket} ->
+        Msg = list_to_binary("DOWNLOAD_REQUEST " ++ FileName ++ " " ++ "\n"),
+        case gen_tcp:send(ClientSocket, Msg) of
+          ok ->
+            spawn(?MODULE, download, [FileName, ClientSocket]);
+          {error, Reason} ->
+            error({tcp_send_failed, Reason})
+        end;
+      {error, _Reason} ->
+        io:format("~nDisconnected Node~n"),
+        ok
+    end
+  catch
+    error:node_info_failed ->
+      io:format("~nUnkown node id~n")
+  end.
+
 download(FileName, ClientSocket) ->
   case gen_tcp:recv(ClientSocket, 1, ?TIMEOUT_DOWNLOAD) of
     {ok, <<?STATUS_OK:8/big-unsigned-integer>>} ->
@@ -504,28 +528,6 @@ download(FileName, ClientSocket) ->
       io:format("~nTcp timeout expired~n")
   end.
 
-send_download_request(FileName, NodeId) ->
-  try
-    #{<<"ip">> := Ip, <<"port">> := Port} = utils:load_node_info(NodeId),
-    case gen_tcp:connect(binary_to_list(Ip),
-                         list_to_integer(Port),
-                         [binary, {active, false}, {reuseaddr, true}, {packet, 0}])
-    of
-      {ok, ClientSocket} ->
-        Msg = list_to_binary("DOWNLOAD_REQUEST " ++ FileName ++ " " ++ "\n"),
-        case gen_tcp:send(ClientSocket, Msg) of
-          ok ->
-            spawn(?MODULE, download, [FileName, ClientSocket]);
-          {error, Reason} ->
-            error({tcp_send_failed, Reason})
-        end;
-      {error, Reason} ->
-        error({tcp_connect_failed, Reason})
-    end
-  catch
-    error:node_info_failed ->
-      io:format("~nUnkown node id~n")
-  end.
 
 receive_big_file(FD, ChunkSize, ClientSocket, BytesReceived, TotalSize) ->
   case gen_tcp:recv(ClientSocket, 7, ?TIMEOUT_DOWNLOAD) of
